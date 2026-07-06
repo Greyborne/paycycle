@@ -1,0 +1,9 @@
+node_modules
+web/node_modules
+web/dist
+.git
+.env
+*.log
+PROMPT.md
+docker-compose.yml
+README.md

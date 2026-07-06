@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <rect width="512" height="512" fill="#2a78d6"/>
+  <path d="M256 146a110 110 0 1 0 110 110" fill="none" stroke="#fff" stroke-width="34" stroke-linecap="round"/>
+  <path d="M344 214l26 48 30-45z" fill="#fff"/>
+  <text x="256" y="290" font-family="system-ui, -apple-system, 'Segoe UI', sans-serif" font-size="120" font-weight="700" fill="#fff" text-anchor="middle">$</text>
+</svg>

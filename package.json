@@ -1,0 +1,24 @@
+{
+  "name": "paycycle",
+  "version": "0.1.0",
+  "description": "Self-hosted pay-period budget tracker with dual planned/actual balance tracking",
+  "license": "MIT",
+  "type": "module",
+  "scripts": {
+    "start": "node server/index.js",
+    "dev": "node --watch server/index.js",
+    "migrate": "node server/migrate.js",
+    "build:web": "npm --prefix web run build",
+    "test": "node --test 'server/test/*.test.js'"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "bcryptjs": "^2.4.3",
+    "cookie-parser": "^1.4.6",
+    "express": "^4.19.2",
+    "jsonwebtoken": "^9.0.2",
+    "pg": "^8.12.0"
+  }
+}
