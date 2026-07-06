@@ -21,6 +21,7 @@ import reportRoutes from './routes/reports.js';
 import householdRoutes from './routes/household.js';
 import accountRoutes from './routes/accounts.js';
 import notificationRoutes from './routes/notifications.js';
+import plaidRoutes from './routes/plaid.js';
 
 const app = express();
 app.set('trust proxy', config.trustProxy);
@@ -50,6 +51,7 @@ app.use('/api/reports', budgetScoped, reportRoutes);
 app.use('/api/household', budgetScoped, householdRoutes);
 app.use('/api/accounts', budgetScoped, accountRoutes);
 app.use('/api/notifications', budgetScoped, notificationRoutes);
+app.use('/api/plaid', budgetScoped, plaidRoutes);
 
 app.use('/api', (req, res) => res.status(404).json({ error: 'Not found' }));
 

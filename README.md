@@ -42,6 +42,13 @@ paper, but three bills haven't posted yet") is the signal.
   light blue / solid blue — your risk tolerance, not ours).
 - **Misc transactions**: one-off uncategorized amounts per period, income or
   expense, feeding the cleared totals — no formal category needed.
+- **Live bank sync (Plaid)**: connect a bank through Plaid Link, map each
+  bank account to a PayCycle account, and pull posted transactions on demand.
+  Synced rows flow through the same pipeline as CSV imports — duplicate-safe
+  (cursor + per-transaction hash), auto-categorized by your learned rules,
+  and rule matches mark the period's line item cleared at the actual amount.
+  Optional: the feature is hidden unless `PLAID_CLIENT_ID`/`PLAID_SECRET`
+  are set (sandbox keys are free at dashboard.plaid.com).
 - **CSV bank-statement import** with auto-categorization: map your bank's
   columns once, review suggested matches, and confirm. Matched rows mark the
   period's line item cleared (optionally snapping the planned amount to the
@@ -124,6 +131,9 @@ on a Raspberry Pi):
 | `SMTP_USER` / `SMTP_PASS` | *(empty)* | SMTP credentials, if your server needs them. |
 | `SMTP_FROM` | `PayCycle <paycycle@localhost>` | From address on notification emails. |
 | `NOTIFICATION_EMAIL_INTERVAL_MINUTES` | `60` | How often the server checks for notifications to email. |
+| `PLAID_CLIENT_ID` / `PLAID_SECRET` | *(empty)* | Plaid API keys for live bank sync. Leave empty to hide the feature. |
+| `PLAID_ENV` | `sandbox` | `sandbox`, `development`, or `production`. In sandbox, connect any bank with the test login `user_good` / `pass_good`. |
+| `PLAID_COUNTRY_CODES` | `US` | Comma-separated country codes for Plaid Link. |
 | `POSTGRES_PASSWORD` | `paycycle` | (compose only) Password for the bundled Postgres container. |
 | `PAYCYCLE_PORT` | `8080` | (compose only) Host port the app is published on. |
 
@@ -205,16 +215,15 @@ npm test                          # schedule/projection engine tests
 
 ## Roadmap
 
-Already shipped from the Phase 2 list: CSV import with auto-categorization,
-reports/exports, PWA installability, shared household budgets, multiple bank
-accounts, in-app + email notifications, and foreign-currency tracked
-accounts. Still open — both need credentials only a deployer can provide:
+The entire original Phase 2 list has shipped except one item: CSV import with
+auto-categorization, reports/exports, PWA installability, shared household
+budgets, multiple bank accounts, in-app + email notifications,
+foreign-currency tracked accounts, and Plaid bank sync are all in.
 
-- **Live bank sync**: requires a Plaid (or similar) developer account, API
-  keys, and their end-user agreement flow.
-- **OAuth login**: requires registering OAuth clients (Google/GitHub/OIDC)
-  with a public callback URL per instance. Email/password with household
-  invite codes covers self-hosted needs in the meantime.
+Still open: **OAuth login** — it requires registering an OAuth client
+(Google/GitHub/any OIDC provider) with a callback URL per instance, so it is
+deployer-specific by nature. Email/password with household invite codes
+covers self-hosted needs in the meantime.
 
 Household semantics: each user belongs to exactly one household at a time.
 Leaving (or being removed from) a household gives that user a fresh empty

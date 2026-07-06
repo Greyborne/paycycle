@@ -5,6 +5,7 @@ import { useAuth } from '../App.jsx';
 import { fmtMoney } from '../format.js';
 import { parseCSV, parseDateCell, parseAmountCell, suggestedRulePattern } from '../csv.js';
 import { useAccounts } from '../useAccounts.js';
+import BankSync from '../components/BankSync.jsx';
 
 function guessColumn(header, patterns) {
   const lower = header.map((h) => h.toLowerCase());
@@ -128,8 +129,11 @@ export default function Import() {
 
   return (
     <div className="import-page">
-      <h1>Import bank statement</h1>
+      <h1>Import</h1>
 
+      <BankSync />
+
+      {step === 'paste' && <h2>Import a CSV statement</h2>}
       {step === 'paste' && (
         <section className="card">
           <p className="muted">

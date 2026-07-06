@@ -19,6 +19,11 @@ services:
       SMTP_USER: ${SMTP_USER:-}
       SMTP_PASS: ${SMTP_PASS:-}
       SMTP_FROM: ${SMTP_FROM:-PayCycle <paycycle@localhost>}
+      # Optional: Plaid bank sync (feature hidden without credentials)
+      PLAID_CLIENT_ID: ${PLAID_CLIENT_ID:-}
+      PLAID_SECRET: ${PLAID_SECRET:-}
+      PLAID_ENV: ${PLAID_ENV:-sandbox}
+      PLAID_COUNTRY_CODES: ${PLAID_COUNTRY_CODES:-US}
     depends_on:
       db:
         condition: service_healthy
