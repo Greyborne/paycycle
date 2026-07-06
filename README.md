@@ -62,6 +62,14 @@ paper, but three bills haven't posted yet") is the signal.
   crossings, uncleared items when a period is about to end, and a nudge when
   nothing has been recorded for 10 days. Dismissals are per member, per
   instance — no email server required.
+- **Email notifications (optional)**: point the server at any SMTP host and
+  members can opt in (Settings → Notifications) to receive new notifications
+  as email digests. Each instance is emailed at most once per user; without
+  SMTP configured nothing changes.
+- **Foreign-currency tracked accounts**: an account in a different currency
+  (a EUR savings account in a USD household) keeps its balance in its own
+  currency and stays outside period budget math — no exchange-rate guessing,
+  no distorted projections. Its transactions are still recorded and visible.
 - **Shared household budgets**: every budget belongs to a household. Invite a
   partner with a 7-day invite code — they can enter it while registering (this
   works even when open registration is disabled) or from Settings on an
@@ -109,6 +117,13 @@ on a Raspberry Pi):
 | `SECURE_COOKIES` | `false` | Set `true` when serving over HTTPS (behind a reverse proxy). |
 | `TRUST_PROXY` | `false` | Set `true` when running behind a reverse proxy so client IPs resolve correctly. |
 | `TZ` | container default | Timezone used to decide "today" for pay-period boundaries. Set to your local zone, e.g. `America/New_York`. |
+| `APP_URL` | *(empty)* | Public URL of your instance, used for links inside notification emails, e.g. `https://paycycle.example.com`. |
+| `SMTP_HOST` | *(empty)* | SMTP server for emailed notifications. Leave empty to disable email entirely (in-app notifications always work). |
+| `SMTP_PORT` | `587` | SMTP port. |
+| `SMTP_SECURE` | `false` | Set `true` for implicit TLS (usually port 465). |
+| `SMTP_USER` / `SMTP_PASS` | *(empty)* | SMTP credentials, if your server needs them. |
+| `SMTP_FROM` | `PayCycle <paycycle@localhost>` | From address on notification emails. |
+| `NOTIFICATION_EMAIL_INTERVAL_MINUTES` | `60` | How often the server checks for notifications to email. |
 | `POSTGRES_PASSWORD` | `paycycle` | (compose only) Password for the bundled Postgres container. |
 | `PAYCYCLE_PORT` | `8080` | (compose only) Host port the app is published on. |
 
@@ -192,9 +207,14 @@ npm test                          # schedule/projection engine tests
 
 Already shipped from the Phase 2 list: CSV import with auto-categorization,
 reports/exports, PWA installability, shared household budgets, multiple bank
-accounts, and in-app notifications. Still open: live bank sync (Plaid or
-similar), email/push notification delivery, multi-currency within a household,
-and OAuth login providers.
+accounts, in-app + email notifications, and foreign-currency tracked
+accounts. Still open — both need credentials only a deployer can provide:
+
+- **Live bank sync**: requires a Plaid (or similar) developer account, API
+  keys, and their end-user agreement flow.
+- **OAuth login**: requires registering OAuth clients (Google/GitHub/OIDC)
+  with a public callback URL per instance. Email/password with household
+  invite codes covers self-hosted needs in the meantime.
 
 Household semantics: each user belongs to exactly one household at a time.
 Leaving (or being removed from) a household gives that user a fresh empty

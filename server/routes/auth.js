@@ -14,6 +14,7 @@ function publicUser(user, budget) {
   return {
     id: user.id,
     email: user.email,
+    emailNotifications: user.email_notifications,
     currency: budget.currency,
     thresholdLowCents: budget.threshold_low_cents,
     thresholdHealthyCents: budget.threshold_healthy_cents,

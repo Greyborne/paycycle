@@ -83,9 +83,10 @@ router.post('/commit', async (req, res, next) => {
     let accountId = req.body.accountId;
     if (accountId !== undefined && accountId !== null) {
       const { rows } = await q(
-        'SELECT id FROM accounts WHERE id = $1 AND budget_id = $2', [accountId, req.budget.id]
+        'SELECT id FROM accounts WHERE id = $1 AND budget_id = $2 AND currency IS NULL',
+        [accountId, req.budget.id]
       );
-      if (!rows.length) bad('Unknown account');
+      if (!rows.length) bad('Statements can only be imported into household-currency accounts');
     } else {
       accountId = await getDefaultAccountId(req.budget.id);
     }

@@ -17,7 +17,7 @@ function guessColumn(header, patterns) {
 
 export default function Import() {
   const { user } = useAuth();
-  const { active: activeAccounts } = useAccounts();
+  const { base: baseAccounts } = useAccounts();
   const currency = user.currency;
   const [accountId, setAccountId] = useState('');
   const [step, setStep] = useState('paste');
@@ -170,11 +170,11 @@ export default function Import() {
               </label>
             ))}
           </div>
-          {activeAccounts.length > 1 && (
+          {baseAccounts.length > 1 && (
             <label>
               This statement belongs to
               <select value={accountId} onChange={(e) => setAccountId(e.target.value)}>
-                {activeAccounts.map((a) => (
+                {baseAccounts.map((a) => (
                   <option key={a.id} value={a.isDefault ? '' : a.id}>{a.name}</option>
                 ))}
               </select>

@@ -174,7 +174,7 @@ function AddForm({ type, onAdded }) {
 
 export default function Categories() {
   const { user } = useAuth();
-  const { active: activeAccounts } = useAccounts();
+  const { base: baseAccounts } = useAccounts();
   const [categories, setCategories] = useState(null);
   const [showArchived, setShowArchived] = useState(false);
 
@@ -207,14 +207,14 @@ export default function Categories() {
         {active.map((c, i) => (
           <CategoryRow
             key={c.id} cat={c} currency={user.currency} onChanged={load} onMove={move}
-            isFirst={i === 0} isLast={i === active.length - 1} accounts={activeAccounts}
+            isFirst={i === 0} isLast={i === active.length - 1} accounts={baseAccounts}
           />
         ))}
         <AddForm type={type} onAdded={load} />
         {showArchived && archived.map((c) => (
           <CategoryRow
             key={c.id} cat={c} currency={user.currency} onChanged={load} onMove={move}
-            isFirst isLast accounts={activeAccounts}
+            isFirst isLast accounts={baseAccounts}
           />
         ))}
       </section>

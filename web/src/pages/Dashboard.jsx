@@ -41,8 +41,8 @@ export default function Dashboard() {
           {data.accounts && data.accounts.filter((a) => !a.archived).length > 1 && (
             <div className="account-chips">
               {data.accounts.filter((a) => !a.archived).map((a) => (
-                <span key={a.id} className="account-chip">
-                  <span className="muted">{a.name}</span> {fmtMoney(a.balanceCents, currency)}
+                <span key={a.id} className="account-chip" title={a.currency ? 'Tracked in its own currency; not part of the total above' : undefined}>
+                  <span className="muted">{a.name}</span> {fmtMoney(a.balanceCents, a.currency || currency)}
                 </span>
               ))}
             </div>

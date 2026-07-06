@@ -62,14 +62,17 @@ export async function getAccounts(budgetId) {
   return rows;
 }
 
-// The default account, self-healing if a household somehow lacks one.
+// The default account (always base-currency), self-healing if a household
+// somehow lacks one.
 export async function getDefaultAccountId(budgetId) {
   const { rows } = await q(
-    'SELECT id FROM accounts WHERE budget_id = $1 AND is_default AND NOT archived', [budgetId]
+    'SELECT id FROM accounts WHERE budget_id = $1 AND is_default AND NOT archived AND currency IS NULL',
+    [budgetId]
   );
   if (rows.length) return rows[0].id;
   const { rows: any } = await q(
-    'SELECT id FROM accounts WHERE budget_id = $1 ORDER BY archived, sort_order, id LIMIT 1', [budgetId]
+    'SELECT id FROM accounts WHERE budget_id = $1 AND currency IS NULL ORDER BY archived, sort_order, id LIMIT 1',
+    [budgetId]
   );
   if (any.length) return any[0].id;
   const { rows: created } = await q(
@@ -84,7 +87,7 @@ export async function getDefaultAccountId(budgetId) {
 // still count toward totals - archiving only hides an account from pickers.
 export async function accountBalances(budgetId) {
   const { rows } = await q(
-    `SELECT a.id, a.name, a.type, a.starting_balance_cents, a.is_default, a.archived, a.sort_order,
+    `SELECT a.id, a.name, a.type, a.currency, a.starting_balance_cents, a.is_default, a.archived, a.sort_order,
             a.starting_balance_cents
             + COALESCE(li.cleared_income, 0) - COALESCE(li.cleared_expenses, 0)
             + COALESCE(tx.misc_income, 0) - COALESCE(tx.misc_expenses, 0) AS balance_cents
@@ -115,7 +118,7 @@ export async function accountBalances(budgetId) {
 
 async function totalStartingBalance(budgetId) {
   const { rows } = await q(
-    'SELECT COALESCE(SUM(starting_balance_cents), 0)::int AS total FROM accounts WHERE budget_id = $1',
+    'SELECT COALESCE(SUM(starting_balance_cents), 0)::int AS total FROM accounts WHERE budget_id = $1 AND currency IS NULL',
     [budgetId]
   );
   return rows[0].total;
@@ -264,12 +267,17 @@ async function materializedSummaries(budgetId) {
   // Only uncategorized transactions count as "misc"; a transaction linked to
   // a category is the record of that category's line item clearing (the line
   // item's amount carries the value, so counting both would double-count).
+  // Transactions on foreign-currency (tracked) accounts are in a different
+  // unit entirely and never enter period budget math.
   const { rows: txn } = await q(
-    `SELECT pay_period_id,
-            COALESCE(SUM(amount_cents) FILTER (WHERE type = 'expense' AND category_template_id IS NULL), 0) AS misc_expenses,
-            COALESCE(SUM(amount_cents) FILTER (WHERE type = 'income' AND category_template_id IS NULL), 0)  AS misc_income,
+    `SELECT t.pay_period_id,
+            COALESCE(SUM(t.amount_cents) FILTER (WHERE t.type = 'expense' AND t.category_template_id IS NULL), 0) AS misc_expenses,
+            COALESCE(SUM(t.amount_cents) FILTER (WHERE t.type = 'income' AND t.category_template_id IS NULL), 0)  AS misc_income,
             COUNT(*) AS txn_count
-     FROM transactions WHERE budget_id = $1 GROUP BY pay_period_id`,
+     FROM transactions t
+     LEFT JOIN accounts a ON a.id = t.account_id
+     WHERE t.budget_id = $1 AND (a.id IS NULL OR a.currency IS NULL)
+     GROUP BY t.pay_period_id`,
     [budgetId]
   );
   const txnByPeriod = new Map(txn.map((t) => [t.pay_period_id, t]));
@@ -421,8 +429,10 @@ export async function getPeriodDetail(budget, cfg, startDate) {
       [periodRow.id]
     );
     const { rows: txns } = await q(
-      `SELECT t.*, u.email AS entered_by FROM transactions t
+      `SELECT t.*, u.email AS entered_by, a.currency AS account_currency, a.name AS account_name
+       FROM transactions t
        LEFT JOIN users u ON u.id = t.user_id
+       LEFT JOIN accounts a ON a.id = t.account_id
        WHERE t.pay_period_id = $1 ORDER BY t.date, t.id`,
       [periodRow.id]
     );

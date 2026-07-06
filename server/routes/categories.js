@@ -57,9 +57,10 @@ router.post('/', async (req, res, next) => {
     let accountId = null;
     if (req.body.accountId !== undefined && req.body.accountId !== null) {
       const { rows: acct } = await q(
-        'SELECT id FROM accounts WHERE id = $1 AND budget_id = $2', [req.body.accountId, req.budget.id]
+        'SELECT id FROM accounts WHERE id = $1 AND budget_id = $2 AND currency IS NULL',
+        [req.body.accountId, req.budget.id]
       );
-      if (!acct.length) bad('Unknown account');
+      if (!acct.length) bad('Categories can only clear to household-currency accounts');
       accountId = req.body.accountId;
     }
     // Default the first amount to be effective from the start of the current
@@ -131,9 +132,10 @@ router.patch('/:id', async (req, res, next) => {
         accountId = null;
       } else {
         const { rows: acct } = await q(
-          'SELECT id FROM accounts WHERE id = $1 AND budget_id = $2', [body.accountId, req.budget.id]
+          'SELECT id FROM accounts WHERE id = $1 AND budget_id = $2 AND currency IS NULL',
+          [body.accountId, req.budget.id]
         );
-        if (!acct.length) bad('Unknown account');
+        if (!acct.length) bad('Categories can only clear to household-currency accounts');
         accountId = body.accountId;
       }
     }

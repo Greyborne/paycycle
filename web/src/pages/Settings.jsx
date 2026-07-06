@@ -12,6 +12,8 @@ export default function Settings() {
   const { refreshUser } = useAuth();
   const [loaded, setLoaded] = useState(false);
   const [currency, setCurrency] = useState('USD');
+  const [emailEnabled, setEmailEnabled] = useState(false);
+  const [emailNotifications, setEmailNotifications] = useState(false);
   const [low, setLow] = useState('');
   const [healthy, setHealthy] = useState('');
   const [warning, setWarning] = useState('');
@@ -21,8 +23,10 @@ export default function Settings() {
   const [error, setError] = useState(null);
 
   useEffect(() => {
-    api('/settings').then(({ user, payPeriodConfig }) => {
+    api('/settings').then(({ user, payPeriodConfig, emailEnabled: enabled }) => {
       setCurrency(user.currency);
+      setEmailEnabled(enabled);
+      setEmailNotifications(user.emailNotifications);
       setLow(centsToInput(user.thresholdLowCents));
       setHealthy(centsToInput(user.thresholdHealthyCents));
       setWarning(centsToInput(user.warningThresholdCents));
@@ -46,6 +50,7 @@ export default function Settings() {
     try {
       const body = {
         currency,
+        emailNotifications,
         thresholdLowCents: parseMoney(low) ?? 0,
         thresholdHealthyCents: parseMoney(healthy) ?? 0,
         warningThresholdCents: parseMoney(warning) ?? 0,
@@ -101,6 +106,24 @@ export default function Settings() {
               />
             </label>
           </div>
+        </section>
+
+        <section className="card">
+          <h2>Notifications</h2>
+          {emailEnabled ? (
+            <label className="toggle-archived">
+              <input
+                type="checkbox" checked={emailNotifications}
+                onChange={(e) => setEmailNotifications(e.target.checked)}
+              />
+              Email me new notifications (bills due, projection warnings) at my account address
+            </label>
+          ) : (
+            <p className="muted small">
+              In-app notifications are always on (the bell in the header). To also receive them by
+              email, the server admin needs to configure SMTP — see the README.
+            </p>
+          )}
         </section>
 
         <section className="card">

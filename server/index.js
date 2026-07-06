@@ -7,6 +7,7 @@ import { pool } from './db.js';
 import { waitForDb, migrate } from './migrate.js';
 import { requireAuth, attachBudget } from './auth.js';
 import { getMembership } from './services/budget.js';
+import { startEmailScheduler } from './services/mailer.js';
 import { HttpError } from './validation.js';
 import authRoutes from './routes/auth.js';
 import setupRoutes from './routes/setup.js';
@@ -70,3 +71,4 @@ await migrate();
 app.listen(config.port, () => {
   console.log(`[paycycle] listening on port ${config.port}`);
 });
+startEmailScheduler();

@@ -81,9 +81,10 @@ router.patch('/line-items/:id', async (req, res, next) => {
     let accountId = item.account_id;
     if (body.accountId !== undefined) {
       const { rows: acct } = await q(
-        'SELECT id FROM accounts WHERE id = $1 AND budget_id = $2', [body.accountId, req.budget.id]
+        'SELECT id FROM accounts WHERE id = $1 AND budget_id = $2 AND currency IS NULL',
+        [body.accountId, req.budget.id]
       );
-      if (!acct.length) return res.status(400).json({ error: 'Unknown account' });
+      if (!acct.length) return res.status(400).json({ error: 'Line items can only clear to household-currency accounts' });
       accountId = body.accountId;
     }
     const { rows: updated } = await q(

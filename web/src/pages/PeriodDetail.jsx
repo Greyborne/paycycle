@@ -109,7 +109,7 @@ function ItemTable({ title, items, currency, editable, onPatch, plannedTotal, cl
 export default function PeriodDetail() {
   const { start } = useParams();
   const { user } = useAuth();
-  const { active: activeAccounts } = useAccounts();
+  const { base: baseAccounts } = useAccounts();
   const currency = user.currency;
   const [data, setData] = useState(null);
   const [error, setError] = useState(null);
@@ -190,14 +190,14 @@ export default function PeriodDetail() {
           plannedTotal={summary?.plannedExpenses ?? 0}
           clearedTotal={summary?.clearedExpenses ?? 0}
           clearedNote="(cleared items + misc transactions)"
-          accounts={activeAccounts}
+          accounts={baseAccounts}
         />
         <ItemTable
           title="Income" items={income} currency={currency} editable={editable} onPatch={patchItem}
           plannedTotal={summary?.plannedIncome ?? 0}
           clearedTotal={summary?.clearedIncome ?? 0}
           clearedNote="(cleared items + misc income)"
-          accounts={activeAccounts}
+          accounts={baseAccounts}
         />
       </div>
 
@@ -225,9 +225,16 @@ export default function PeriodDetail() {
                       <span className="muted small"> · {t.entered_by}</span>
                     )}
                   </td>
-                  <td>{t.type}</td>
+                  <td>
+                    {t.type}
+                    {t.account_currency && (
+                      <span className="muted small" title="On a foreign-currency tracked account — not counted in period totals">
+                        {' '}· {t.account_name} ({t.account_currency})
+                      </span>
+                    )}
+                  </td>
                   <td className={`num ${t.type === 'expense' ? 'amount-neg' : ''}`}>
-                    {t.type === 'expense' ? '−' : ''}{fmtMoney(t.amount_cents, currency)}
+                    {t.type === 'expense' ? '−' : ''}{fmtMoney(t.amount_cents, t.account_currency || currency)}
                   </td>
                   <td className="center">
                     <button className="btn btn-ghost btn-small" onClick={() => deleteTxn(t.id)} aria-label="Delete transaction">✕</button>

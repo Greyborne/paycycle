@@ -19,7 +19,7 @@ router.get('/', async (req, res, next) => {
 
     res.json({
       accounts: accounts.map((a) => ({
-        id: a.id, name: a.name, type: a.type, balanceCents: a.balance_cents,
+        id: a.id, name: a.name, type: a.type, currency: a.currency, balanceCents: a.balance_cents,
         isDefault: a.is_default, archived: a.archived,
       })),
       currency: req.budget.currency,

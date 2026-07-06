@@ -11,6 +11,14 @@ services:
       ALLOW_REGISTRATION: ${ALLOW_REGISTRATION:-true}
       DEFAULT_CURRENCY: ${DEFAULT_CURRENCY:-USD}
       TZ: ${TZ:-UTC}
+      # Optional: emailed notifications (in-app notifications work without this)
+      APP_URL: ${APP_URL:-}
+      SMTP_HOST: ${SMTP_HOST:-}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_SECURE: ${SMTP_SECURE:-false}
+      SMTP_USER: ${SMTP_USER:-}
+      SMTP_PASS: ${SMTP_PASS:-}
+      SMTP_FROM: ${SMTP_FROM:-PayCycle <paycycle@localhost>}
     depends_on:
       db:
         condition: service_healthy

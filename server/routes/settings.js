@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { q } from '../db.js';
 import { bad, parseCadenceConfig, requireCents, requireCurrency } from '../validation.js';
 import { getBudget, getConfig, getUser } from '../services/budget.js';
+import { emailEnabled } from '../services/mailer.js';
 import { publicUser } from './auth.js';
 
 const router = Router();
@@ -20,7 +21,11 @@ function publicConfig(c) {
 router.get('/', async (req, res, next) => {
   try {
     const [user, cfg] = await Promise.all([getUser(req.userId), getConfig(req.budget.id)]);
-    res.json({ user: publicUser(user, req.budget), payPeriodConfig: publicConfig(cfg) });
+    res.json({
+      user: publicUser(user, req.budget),
+      payPeriodConfig: publicConfig(cfg),
+      emailEnabled: emailEnabled(),
+    });
   } catch (err) {
     next(err);
   }
@@ -48,6 +53,14 @@ router.put('/', async (req, res, next) => {
       [currency, low, healthy, warning, budget.id]
     );
 
+    // Email opt-in is per user, not per household.
+    if (body.emailNotifications !== undefined) {
+      await q(
+        'UPDATE users SET email_notifications = $1 WHERE id = $2',
+        [Boolean(body.emailNotifications), req.userId]
+      );
+    }
+
     // Cadence is editable post-onboarding: existing real periods are kept
     // as-is and the new schedule applies from the next period forward.
     if (body.cadence !== undefined) {
@@ -65,6 +78,7 @@ router.put('/', async (req, res, next) => {
     res.json({
       user: publicUser(user, { ...updatedBudget, role: req.budgetRole }),
       payPeriodConfig: publicConfig(updatedCfg),
+      emailEnabled: emailEnabled(),
     });
   } catch (err) {
     next(err);

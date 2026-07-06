@@ -7,9 +7,12 @@ export function useAccounts() {
   const [accounts, setAccounts] = useState(null);
   const reload = () => api('/accounts').then((d) => setAccounts(d.accounts));
   useEffect(() => { reload(); }, []);
+  const active = (accounts || []).filter((a) => !a.archived);
   return {
     accounts,
-    active: (accounts || []).filter((a) => !a.archived),
+    active,
+    // Base-currency accounts only - the ones budget items can clear to.
+    base: active.filter((a) => !a.currency),
     reload,
   };
 }

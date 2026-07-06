@@ -8,6 +8,7 @@ const TYPES = ['checking', 'savings', 'credit', 'cash', 'other'];
 
 function AccountRow({ account, currency, onPatch }) {
   const [starting, setStarting] = useState(centsToInput(account.startingBalanceCents));
+  const displayCurrency = account.currency || currency;
   return (
     <tr className={account.archived ? 'row-muted' : ''}>
       <td>
@@ -18,6 +19,11 @@ function AccountRow({ account, currency, onPatch }) {
             if (v && v !== account.name) onPatch(account.id, { name: v });
           }}
         />
+        {account.currency && (
+          <span className="badge health-none" title="Tracked in its own currency, outside period budget math">
+            {account.currency}
+          </span>
+        )}
       </td>
       <td>
         <select
@@ -41,12 +47,13 @@ function AccountRow({ account, currency, onPatch }) {
           }}
         />
       </td>
-      <td className="num">{fmtMoney(account.balanceCents, currency)}</td>
+      <td className="num">{fmtMoney(account.balanceCents, displayCurrency)}</td>
       <td className="center">
         <input
-          type="radio" name="default-account" checked={account.isDefault} disabled={account.archived}
+          type="radio" name="default-account" checked={account.isDefault}
+          disabled={account.archived || Boolean(account.currency)}
           onChange={() => onPatch(account.id, { isDefault: true })}
-          title="Default account for new items"
+          title={account.currency ? 'Foreign-currency accounts cannot be the default' : 'Default account for new items'}
         />
       </td>
       <td className="center">
@@ -66,6 +73,7 @@ export default function AccountsCard() {
   const [name, setName] = useState('');
   const [type, setType] = useState('checking');
   const [starting, setStarting] = useState('');
+  const [accountCurrency, setAccountCurrency] = useState('');
   const [error, setError] = useState(null);
 
   if (!accounts) return null;
@@ -87,10 +95,16 @@ export default function AccountsCard() {
     try {
       await api('/accounts', {
         method: 'POST',
-        body: { name, type, startingBalanceCents: parseMoney(starting) ?? 0 },
+        body: {
+          name,
+          type,
+          startingBalanceCents: parseMoney(starting) ?? 0,
+          currency: accountCurrency.trim() || undefined,
+        },
       });
       setName('');
       setStarting('');
+      setAccountCurrency('');
       reload();
     } catch (err) {
       setError(err.message);
@@ -126,8 +140,17 @@ export default function AccountsCard() {
           {TYPES.map((t) => <option key={t} value={t}>{t}</option>)}
         </select>
         <input value={starting} onChange={(e) => setStarting(e.target.value)} inputMode="decimal" placeholder="Starting balance" />
+        <input
+          value={accountCurrency} onChange={(e) => setAccountCurrency(e.target.value.toUpperCase())}
+          maxLength={3} placeholder={user.currency} style={{ width: '5.5rem' }}
+          title="Currency (leave as household currency, or a different code for a tracked foreign-currency account)"
+        />
         <button className="btn btn-primary">Add account</button>
       </form>
+      <p className="muted small">
+        An account in a different currency is tracked in that currency and stays outside period
+        budget math — no exchange-rate guessing.
+      </p>
       {error && <p className="form-error" role="alert">{error}</p>}
     </section>
   );

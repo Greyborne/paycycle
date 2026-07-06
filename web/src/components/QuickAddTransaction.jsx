@@ -64,7 +64,9 @@ export default function QuickAddTransaction({ onAdded }) {
       {active.length > 1 && (
         <select value={accountId} onChange={(e) => setAccountId(e.target.value)} aria-label="Account">
           {active.map((a) => (
-            <option key={a.id} value={a.isDefault ? '' : a.id}>{a.name}</option>
+            <option key={a.id} value={a.isDefault ? '' : a.id}>
+              {a.name}{a.currency ? ` (${a.currency})` : ''}
+            </option>
           ))}
         </select>
       )}
