@@ -29,6 +29,16 @@ export const config = {
     env: (process.env.PLAID_ENV || 'sandbox').toLowerCase(),
     countryCodes: (process.env.PLAID_COUNTRY_CODES || 'US').split(',').map((c) => c.trim().toUpperCase()),
   },
+  oidc: {
+    issuer: (process.env.OIDC_ISSUER || '').replace(/\/$/, ''),
+    // Backchannel base for server-side calls (discovery/token/jwks) when the
+    // public issuer URL isn't reachable from inside the container - e.g. a
+    // Keycloak on the same compose network.
+    internalIssuer: (process.env.OIDC_ISSUER_INTERNAL || '').replace(/\/$/, ''),
+    clientId: process.env.OIDC_CLIENT_ID || '',
+    clientSecret: process.env.OIDC_CLIENT_SECRET || '',
+    providerName: process.env.OIDC_PROVIDER_NAME || 'SSO',
+  },
 };
 
 if (!config.sessionSecret) {

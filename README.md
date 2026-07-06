@@ -84,6 +84,11 @@ paper, but three bills haven't posted yet") is the signal.
   transactions record who entered them. Owners manage invites and members.
 - **Multi-user** with email/password auth and no external dependencies —
   separate households never see each other's data.
+- **Single sign-on (optional)**: plug in any OIDC provider — Google,
+  Keycloak, Authentik — and a "Continue with …" button appears on the login
+  page. Accounts link by verified email; new SSO sign-ups respect
+  `ALLOW_REGISTRATION` and household invite codes, and a backchannel URL
+  override supports providers running on the same Docker network.
 
 ## Quick start (docker compose)
 
@@ -134,6 +139,10 @@ on a Raspberry Pi):
 | `PLAID_CLIENT_ID` / `PLAID_SECRET` | *(empty)* | Plaid API keys for live bank sync. Leave empty to hide the feature. |
 | `PLAID_ENV` | `sandbox` | `sandbox`, `development`, or `production`. In sandbox, connect any bank with the test login `user_good` / `pass_good`. |
 | `PLAID_COUNTRY_CODES` | `US` | Comma-separated country codes for Plaid Link. |
+| `OIDC_ISSUER` | *(empty)* | OIDC issuer URL for single sign-on, e.g. `https://accounts.google.com`. Register your client with redirect URI `<APP_URL>/api/auth/oidc/callback`. Leave empty to hide SSO. |
+| `OIDC_CLIENT_ID` / `OIDC_CLIENT_SECRET` | *(empty)* | Credentials from your OIDC provider. |
+| `OIDC_PROVIDER_NAME` | `SSO` | Label on the login button ("Continue with Google"). |
+| `OIDC_ISSUER_INTERNAL` | *(empty)* | Optional backchannel base URL when the public issuer isn't reachable from inside the container (e.g. `http://keycloak:8080/realms/main` on the same compose network). |
 | `POSTGRES_PASSWORD` | `paycycle` | (compose only) Password for the bundled Postgres container. |
 | `PAYCYCLE_PORT` | `8080` | (compose only) Host port the app is published on. |
 
@@ -215,15 +224,14 @@ npm test                          # schedule/projection engine tests
 
 ## Roadmap
 
-The entire original Phase 2 list has shipped except one item: CSV import with
+The entire original Phase 2 list has shipped: CSV import with
 auto-categorization, reports/exports, PWA installability, shared household
 budgets, multiple bank accounts, in-app + email notifications,
-foreign-currency tracked accounts, and Plaid bank sync are all in.
+foreign-currency tracked accounts, Plaid bank sync, and OIDC single sign-on.
 
-Still open: **OAuth login** — it requires registering an OAuth client
-(Google/GitHub/any OIDC provider) with a callback URL per instance, so it is
-deployer-specific by nature. Email/password with household invite codes
-covers self-hosted needs in the meantime.
+Ideas beyond the original scope: scheduled automatic bank sync, richer
+analytics (category trends, sankey flows), budget goal tracking, and CSV/PDF
+report exports per category.
 
 Household semantics: each user belongs to exactly one household at a time.
 Leaving (or being removed from) a household gives that user a fresh empty

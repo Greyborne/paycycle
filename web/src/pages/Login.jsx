@@ -1,17 +1,27 @@
-import React, { useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import React, { useEffect, useState } from 'react';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { api } from '../api.js';
 import { useAuth } from '../App.jsx';
 
 export default function Login() {
-  const { setUser, registrationOpen } = useAuth();
+  const { setUser } = useAuth();
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
   const [mode, setMode] = useState('login');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [inviteCode, setInviteCode] = useState('');
-  const [error, setError] = useState(null);
+  const [error, setError] = useState(searchParams.get('error'));
   const [busy, setBusy] = useState(false);
+  const [serverConfig, setServerConfig] = useState({ registrationOpen: true, oidc: { enabled: false } });
+
+  useEffect(() => {
+    api('/auth/config').then(setServerConfig).catch(() => {});
+  }, []);
+
+  const registrationOpen = serverConfig.registrationOpen;
+  const oidc = serverConfig.oidc;
+  const ssoHref = `/api/auth/oidc/start${inviteCode.trim() ? `?invite=${encodeURIComponent(inviteCode.trim())}` : ''}`;
 
   const submit = async (e) => {
     e.preventDefault();
@@ -62,6 +72,17 @@ export default function Login() {
             {mode === 'login' ? 'Sign in' : 'Create account'}
           </button>
         </form>
+        {oidc.enabled && (
+          <>
+            <div className="sso-divider muted small">or</div>
+            <a className="btn btn-block sso-btn" href={ssoHref}>
+              Continue with {oidc.name}
+            </a>
+            {mode === 'register' && inviteCode.trim() && (
+              <p className="muted small">Your invite code will be applied to the {oidc.name} sign-in too.</p>
+            )}
+          </>
+        )}
         {registrationOpen && (
           <button
             className="btn btn-ghost btn-block"

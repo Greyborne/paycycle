@@ -399,6 +399,19 @@ textarea { font-family: ui-monospace, monospace; font-size: 0.85rem; resize: ver
 .plaid-item { border-top: 1px solid var(--grid); padding: 0.6rem 0; }
 .plaid-account-name { font-weight: 600; }
 
+.sso-divider {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  margin: 0.9rem 0 0.5rem;
+}
+.sso-divider::before, .sso-divider::after {
+  content: '';
+  flex: 1;
+  border-top: 1px solid var(--grid);
+}
+.sso-btn { text-align: center; text-decoration: none; font-weight: 600; }
+
 @media (max-width: 640px) {
   .onboarding-cat { grid-template-columns: auto 1fr 90px; }
   .onboarding-cat select:nth-child(4), .onboarding-cat input:nth-child(5) { grid-column: span 1; }
