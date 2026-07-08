@@ -7,7 +7,13 @@ off as they clear your bank account, and PayCycle projects your estimated
 balance years into the future — warning you *now* if a $10/month increase
 means you'll go underwater in ten months.
 
-> 📸 *Screenshots / demo GIF coming soon.*
+![PayCycle dashboard — current balance and the forward projection chart](docs/screenshots/dashboard.png)
+
+<sub>The dashboard: your current cleared balance, the estimated running-balance projection years out, and the current period at a glance.</sub>
+
+![PayCycle pay-period view — planned vs. cleared items across periods](docs/screenshots/pay-period.png)
+
+<sub>The pay-period view: recurring income and expenses per period, ticked off as they clear, several periods side by side.</sub>
 
 ## Why it exists
 
