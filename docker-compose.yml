@@ -1,5 +1,9 @@
 services:
   app:
+    # Self-hosting? Skip the local build and pull the published image instead:
+    # comment out `build: .` and the `image: paycycle:latest` line below, then
+    # uncomment the next line (pin a version, or use :latest).
+    #   image: chazwall/paycycle:0.1.0
     build: .
     image: paycycle:latest
     restart: unless-stopped
