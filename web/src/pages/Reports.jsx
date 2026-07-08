@@ -1,11 +1,12 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { api } from '../api.js';
-import { useAuth } from '../App.jsx';
+import { useAccount, useAuth } from '../App.jsx';
 import { fmtMoney } from '../format.js';
+import { useAccounts } from '../useAccounts.js';
 
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 
-function RollupTable({ title, rows, miscRow, currency, mode }) {
+function RollupTable({ title, rows, miscRow, currency, mode, accountLabel }) {
   const cell = (m) => (mode === 'planned' ? m.planned : m.cleared);
   const rowTotal = (r) => r.months.reduce((s, m) => s + cell(m), 0);
   const miscTotal = miscRow.reduce((s, v) => s + v, 0);
@@ -28,7 +29,10 @@ function RollupTable({ title, rows, miscRow, currency, mode }) {
           <tbody>
             {rows.map((r) => (
               <tr key={r.id}>
-                <td>{r.name}</td>
+                <td>
+                  {r.name}
+                  {accountLabel(r) && <span className="muted small"> · {accountLabel(r)}</span>}
+                </td>
                 {r.months.map((m, i) => <td key={i} className="num">{money(cell(m))}</td>)}
                 <td className="num"><strong>{money(rowTotal(r))}</strong></td>
               </tr>
@@ -56,18 +60,22 @@ function RollupTable({ title, rows, miscRow, currency, mode }) {
 
 export default function Reports() {
   const { user } = useAuth();
+  const { accountId } = useAccount();
+  const { base: baseAccounts } = useAccounts();
   const [year, setYear] = useState(new Date().getFullYear());
   const [data, setData] = useState(null);
   const [mode, setMode] = useState('cleared');
+  const [scope, setScope] = useState('all');
   const [error, setError] = useState(null);
 
   const load = useCallback(async () => {
     try {
-      setData(await api(`/reports/summary?year=${year}`));
+      const acct = scope === 'account' ? `&account=${accountId ?? ''}` : '';
+      setData(await api(`/reports/summary?year=${year}${acct}`));
     } catch (err) {
       setError(err.message);
     }
-  }, [year]);
+  }, [year, scope, accountId]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -75,11 +83,18 @@ export default function Reports() {
   if (!data) return <div className="page-loading">Loading…</div>;
 
   const years = data.years.length ? data.years : [year];
+  const defaultId = baseAccounts.find((a) => a.isDefault)?.id;
+  const selectedName = baseAccounts.find((a) => a.id === (accountId ?? defaultId))?.name ?? 'Selected account';
+  // In the all-accounts view of a multi-account household, same-named
+  // categories on different accounts need their account spelled out.
+  const accountLabel = (r) => {
+    if (scope !== 'all' || baseAccounts.length < 2) return null;
+    return baseAccounts.find((a) => a.id === (r.accountId ?? defaultId))?.name ?? null;
+  };
 
   return (
     <div className="reports-page">
-      <div className="card-head">
-        <h1>Reports</h1>
+      <div className="page-actions">
         <div className="range-picker">
           <a className="btn btn-ghost" href="/api/reports/export/transactions.csv">Export transactions CSV</a>
           <a className="btn btn-ghost" href="/api/reports/export/periods.csv">Export periods CSV</a>
@@ -100,17 +115,29 @@ export default function Reports() {
             Planned
           </button>
         </div>
+        {baseAccounts.length > 1 && (
+          <div className="range-picker" role="group" aria-label="Account scope">
+            <button className={`btn btn-ghost ${scope === 'all' ? 'active' : ''}`} onClick={() => setScope('all')}>
+              All accounts
+            </button>
+            <button className={`btn btn-ghost ${scope === 'account' ? 'active' : ''}`} onClick={() => setScope('account')}>
+              {selectedName}
+            </button>
+          </div>
+        )}
       </div>
       <p className="muted small">
         Amounts are grouped by the month each pay period starts in; misc transactions by their own date.
-        Only recorded (past and current) periods appear here — the future lives on the dashboard.
+        Planned amounts cover the whole year (projected from your categories, respecting their valid
+        dates); cleared amounts exist for recorded periods, with earlier months treated as reconciled
+        at plan.
       </p>
       <RollupTable
-        title={`Expenses · ${data.year}`} currency={user.currency} mode={mode}
+        title={`Expenses · ${data.year}`} currency={user.currency} mode={mode} accountLabel={accountLabel}
         rows={data.categories.filter((c) => c.type === 'expense')} miscRow={data.misc.expense}
       />
       <RollupTable
-        title={`Income · ${data.year}`} currency={user.currency} mode={mode}
+        title={`Income · ${data.year}`} currency={user.currency} mode={mode} accountLabel={accountLabel}
         rows={data.categories.filter((c) => c.type === 'income')} miscRow={data.misc.income}
       />
     </div>

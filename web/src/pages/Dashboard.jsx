@@ -1,52 +1,54 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { api } from '../api.js';
+import { useAccount } from '../App.jsx';
 import { fmtDate, fmtMoney, fmtRange } from '../format.js';
 import HealthBadge from '../components/HealthBadge.jsx';
 import ProjectionChart from '../components/ProjectionChart.jsx';
 import QuickAddTransaction from '../components/QuickAddTransaction.jsx';
 
 export default function Dashboard() {
+  const { accountId } = useAccount();
   const [data, setData] = useState(null);
+  const [tags, setTags] = useState([]);
   const [months, setMonths] = useState(24);
   const [error, setError] = useState(null);
 
   const load = useCallback(async () => {
     try {
-      setData(await api(`/dashboard?months=${months}`));
+      setData(await api(`/dashboard?months=${months}&account=${accountId ?? ''}`));
     } catch (err) {
       setError(err.message);
     }
-  }, [months]);
+  }, [months, accountId]);
 
   useEffect(() => { load(); }, [load]);
+
+  useEffect(() => {
+    api('/categories')
+      .then((d) => setTags(d.categories.filter((c) => c.categoryType === 'tag' && !c.archived)))
+      .catch(() => {});
+  }, []);
 
   if (error) return <p className="form-error">{error}</p>;
   if (!data) return <div className="page-loading">Loading…</div>;
 
   const { currency, currentPeriod: cur, projection, firstNegative, firstBelowWarning } = data;
   const upcoming = projection.filter((e) => !e.materialized).slice(0, 8);
+  const activeAccounts = (data.accounts || []).filter((a) => !a.archived);
+  const account = data.accounts?.find((a) => a.id === data.accountId);
 
   return (
     <div className="dashboard">
-      {/* Hero: the one place the actual/cleared balance lives */}
+      {/* Hero: the selected account's actual/cleared balance */}
       <section className="hero card">
         <div>
-          <div className="stat-label">Current actual balance</div>
+          <div className="stat-label">Actual balance{account ? ` · ${account.name}` : ''}</div>
           <div className="hero-figure">{fmtMoney(data.actualBalanceCents, currency)}</div>
           <div className="muted small">
             Cleared items and transactions only
             {data.actualAsOf ? ` · through the period of ${fmtRange(data.actualAsOf.start, data.actualAsOf.end)}` : ''}
           </div>
-          {data.accounts && data.accounts.filter((a) => !a.archived).length > 1 && (
-            <div className="account-chips">
-              {data.accounts.filter((a) => !a.archived).map((a) => (
-                <span key={a.id} className="account-chip" title={a.currency ? 'Tracked in its own currency; not part of the total above' : undefined}>
-                  <span className="muted">{a.name}</span> {fmtMoney(a.balanceCents, a.currency || currency)}
-                </span>
-              ))}
-            </div>
-          )}
         </div>
         {cur && (
           <div className="hero-side">
@@ -65,17 +67,38 @@ export default function Dashboard() {
         <section className="warning-banner" role="alert">
           {firstNegative ? (
             <>
-              <strong>Heads up:</strong>&nbsp;your projected balance goes negative
+              <strong>Heads up:</strong>&nbsp;{account ? `${account.name} is` : 'your balance is'} projected to go negative
               ({fmtMoney(firstNegative.estBalance, currency)}) in the period starting{' '}
               <Link to={`/period/${firstNegative.start}`}>{fmtDate(firstNegative.start)}</Link>.
             </>
           ) : (
             <>
-              <strong>Heads up:</strong>&nbsp;your projected balance drops below your warning threshold
+              <strong>Heads up:</strong>&nbsp;{account ? `${account.name} is` : 'your balance is'} projected below your warning threshold
               ({fmtMoney(firstBelowWarning.estBalance, currency)}) in the period starting{' '}
               <Link to={`/period/${firstBelowWarning.start}`}>{fmtDate(firstBelowWarning.start)}</Link>.
             </>
           )}
+        </section>
+      )}
+
+      {/* Net worth: the only place accounts are combined */}
+      {activeAccounts.length > 1 && (
+        <section className="card networth">
+          <div>
+            <div className="stat-label">Net worth · all accounts</div>
+            <div className="networth-figure">{fmtMoney(data.netWorthCents, currency)}</div>
+          </div>
+          <div className="account-chips">
+            {activeAccounts.map((a) => (
+              <span
+                key={a.id}
+                className={`account-chip ${a.id === data.accountId ? 'account-chip-active' : ''}`}
+                title={a.currency ? 'Tracked in its own currency; not part of the total' : undefined}
+              >
+                <span className="muted">{a.name}</span> {fmtMoney(a.balanceCents, a.currency || currency)}
+              </span>
+            ))}
+          </div>
         </section>
       )}
 
@@ -134,7 +157,7 @@ export default function Dashboard() {
             </div>
           </div>
           <h3>Quick add transaction</h3>
-          <QuickAddTransaction onAdded={load} />
+          <QuickAddTransaction onAdded={load} fixedAccountId={data.accountId} tags={tags} />
         </section>
       )}
 

@@ -100,6 +100,7 @@ export default function Onboarding() {
     cadence: 'biweekly', anchorDate: todayISO(), intervalDays: 10, day1: 1, day2: 15,
   });
   const [balance, setBalance] = useState('');
+  const [startDate, setStartDate] = useState(todayISO());
   const [currency, setCurrency] = useState(user.currency || 'USD');
   const [cats, setCats] = useState(SUGGESTED.map((c) => ({ ...c, amount: '', include: true })));
   const [joinCode, setJoinCode] = useState('');
@@ -136,6 +137,7 @@ export default function Onboarding() {
         body: {
           ...cadenceBody(form),
           startingBalanceCents: parseMoney(balance) ?? 0,
+          startDate,
           currency,
           categories,
         },
@@ -189,11 +191,22 @@ export default function Onboarding() {
               in Settings later.
             </p>
             <label>
-              Current bank account balance
+              Start tracking from
+              <input type="date" value={startDate} onChange={(e) => setStartDate(e.target.value)} />
+              <span className="muted small">
+                We&apos;ll begin at the pay period containing this date and make it your current period.
+                Usually your most recent (or upcoming) payday. Earlier periods stay empty.
+              </span>
+            </label>
+            <label>
+              Bank balance going into that period
               <input
                 type="text" inputMode="decimal" placeholder="0.00" value={balance}
                 onChange={(e) => setBalance(e.target.value)}
               />
+              <span className="muted small">
+                What your account read the day before — your starting point.
+              </span>
             </label>
             <label>
               Currency

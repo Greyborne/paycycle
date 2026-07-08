@@ -44,13 +44,15 @@ router.put('/', async (req, res, next) => {
       ? requireCents(body.thresholdHealthyCents, 'thresholdHealthyCents') : budget.threshold_healthy_cents;
     const warning = body.warningThresholdCents !== undefined
       ? requireCents(body.warningThresholdCents, 'warningThresholdCents') : budget.warning_threshold_cents;
+    const drift = body.driftThresholdCents !== undefined
+      ? requireCents(body.driftThresholdCents, 'driftThresholdCents') : budget.drift_threshold_cents;
     if (low < 0 || healthy < 0 || warning < 0) bad('Thresholds cannot be negative');
     if (healthy < low) bad('The healthy threshold must be at least the low threshold');
 
     await q(
       `UPDATE budgets SET currency = $1, threshold_low_cents = $2,
-         threshold_healthy_cents = $3, warning_threshold_cents = $4 WHERE id = $5`,
-      [currency, low, healthy, warning, budget.id]
+         threshold_healthy_cents = $3, warning_threshold_cents = $4, drift_threshold_cents = $6 WHERE id = $5`,
+      [currency, low, healthy, warning, budget.id, drift]
     );
 
     // Email opt-in is per user, not per household.

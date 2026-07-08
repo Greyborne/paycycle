@@ -1,7 +1,8 @@
 import { Router } from 'express';
 import { pool, q } from '../db.js';
-import { bad, requireCents, requireCurrency } from '../validation.js';
-import { accountBalances } from '../services/budget.js';
+import { bad, requireCents, requireCurrency, requireDate } from '../validation.js';
+import { accountBalances, getConfig } from '../services/budget.js';
+import { periodContaining, todayISO } from '../services/schedule.js';
 
 const router = Router();
 
@@ -18,12 +19,36 @@ function publicAccount(a) {
     isDefault: a.is_default,
     archived: a.archived,
     sortOrder: a.sort_order,
+    startedOn: a.started_on ?? null,
+    institution: a.institution ?? null,
+    numberMask: a.number_mask ?? null,
+    source: a.source ?? 'manual',
   };
+}
+
+// Snap a requested tracking-start date to the pay period that contains it
+// (defaulting to today's period), so an account's start always lands on a
+// real period boundary.
+async function resolveStartedOn(budget, raw) {
+  const cfg = await getConfig(budget.id);
+  const date = raw ? requireDate(raw, 'startedOn') : todayISO();
+  return cfg ? periodContaining(cfg, date).start : date;
 }
 
 // Normalize a requested currency against the household's base: base currency
 // is stored as NULL; anything else marks the account as a foreign-currency
 // tracked account (own unit, outside period budget math).
+// Only the last 4 digits of an account number are ever stored.
+function normalizeMask(value) {
+  if (value === undefined || value === null) return null;
+  const digits = String(value).replace(/\D/g, '');
+  return digits ? digits.slice(-4) : null;
+}
+
+function normalizeText(value) {
+  return typeof value === 'string' && value.trim() ? value.trim().slice(0, 80) : null;
+}
+
 function normalizeCurrency(value, budget) {
   if (value === undefined || value === null || value === '') return null;
   const code = requireCurrency(value);
@@ -50,10 +75,12 @@ router.post('/', async (req, res, next) => {
       'SELECT COALESCE(MAX(sort_order), -1) + 1 AS next FROM accounts WHERE budget_id = $1',
       [req.budget.id]
     );
+    const startedOn = await resolveStartedOn(req.budget, req.body.startedOn);
     await q(
-      `INSERT INTO accounts (budget_id, name, type, starting_balance_cents, sort_order, currency)
-       VALUES ($1, $2, $3, $4, $5, $6)`,
-      [req.budget.id, name.trim(), type || 'checking', starting, maxOrder[0].next, currency]
+      `INSERT INTO accounts (budget_id, name, type, starting_balance_cents, sort_order, currency, institution, number_mask, started_on)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+      [req.budget.id, name.trim(), type || 'checking', starting, maxOrder[0].next, currency,
+       normalizeText(req.body.institution), normalizeMask(req.body.numberMask), startedOn]
     );
     const rows = await accountBalances(req.budget.id);
     res.status(201).json({ accounts: rows.map(publicAccount) });
@@ -80,6 +107,10 @@ router.patch('/:id', async (req, res, next) => {
     const type = body.type ?? a.type;
     const starting = body.startingBalanceCents !== undefined
       ? requireCents(body.startingBalanceCents, 'startingBalanceCents') : a.starting_balance_cents;
+    // Editing the start date only re-anchors the label and future category
+    // defaults; it never rewrites existing line items.
+    const startedOn = body.startedOn !== undefined
+      ? await resolveStartedOn(req.budget, body.startedOn) : a.started_on;
     const archived = body.archived !== undefined ? Boolean(body.archived) : a.archived;
     const makeDefault = body.isDefault === true && !a.is_default;
     if (a.is_default && archived) bad('Make another account the default before archiving this one');
@@ -110,8 +141,8 @@ router.patch('/:id', async (req, res, next) => {
     }
     await client.query(
       `UPDATE accounts SET name = $1, type = $2, starting_balance_cents = $3, archived = $4,
-         is_default = $5, currency = $6 WHERE id = $7`,
-      [name, type, starting, archived, makeDefault || a.is_default, currency, id]
+         is_default = $5, currency = $6, started_on = $8 WHERE id = $7`,
+      [name, type, starting, archived, makeDefault || a.is_default, currency, id, startedOn]
     );
     await client.query('COMMIT');
     const rows = await accountBalances(req.budget.id);

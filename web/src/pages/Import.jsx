@@ -25,7 +25,7 @@ export default function Import() {
   const [raw, setRaw] = useState('');
   const [grid, setGrid] = useState([]);
   const [hasHeader, setHasHeader] = useState(true);
-  const [cols, setCols] = useState({ date: 0, description: 1, amount: 2 });
+  const [cols, setCols] = useState({ date: 0, description: 1, amount: 2, bankId: -1 });
   const [dateOrder, setDateOrder] = useState('mdy');
   const [signFlip, setSignFlip] = useState(false); // true when the bank exports withdrawals as positive
   const [rows, setRows] = useState([]);
@@ -47,6 +47,7 @@ export default function Import() {
       date: Math.max(0, guessColumn(header, ['date'])),
       description: Math.max(0, guessColumn(header, ['description', 'memo', 'payee', 'name', 'detail'])),
       amount: Math.max(0, guessColumn(header, ['amount', 'value'])),
+      bankId: guessColumn(header, ['transaction id', 'reference', 'fitid', 'id']),
     });
     setHasHeader(header.some((h) => /[a-z]/i.test(h) && parseAmountCell(h) === null));
     setError(null);
@@ -73,11 +74,16 @@ export default function Import() {
         let amount = parseAmountCell(r[cols.amount]);
         if (date === null || amount === null || amount === 0) { badRows += 1; continue; }
         if (signFlip) amount = -amount;
-        mapped.push({ date, description: String(r[cols.description] ?? '').trim(), amountCents: amount });
+        mapped.push({
+          date,
+          description: String(r[cols.description] ?? '').trim(),
+          amountCents: amount,
+          bankId: cols.bankId >= 0 ? String(r[cols.bankId] ?? '').trim() || undefined : undefined,
+        });
       }
       if (!mapped.length) throw new Error('No usable rows — check the column mapping and date format');
       const [preview, cats] = await Promise.all([
-        api('/import/preview', { method: 'POST', body: { rows: mapped } }),
+        api('/import/preview', { method: 'POST', body: { rows: mapped, accountId: accountId ? Number(accountId) : undefined } }),
         api('/categories'),
       ]);
       setCategories(cats.categories);
@@ -106,7 +112,9 @@ export default function Import() {
           date: r.date,
           description: r.description,
           amountCents: r.amountCents,
+          bankId: r.bankId,
           categoryTemplateId: r.categoryTemplateId ?? null,
+          categorizedBy: r.categoryTemplateId ? (r.matchedBy === 'rule' ? 'rule' : 'manual') : undefined,
           // Learn a rule when the user confirmed a match that didn't already
           // come from a rule.
           rulePattern: remember && r.categoryTemplateId && r.matchedBy !== 'rule'
@@ -129,8 +137,6 @@ export default function Import() {
 
   return (
     <div className="import-page">
-      <h1>Import</h1>
-
       <BankSync />
 
       {step === 'paste' && <h2>Import a CSV statement</h2>}
@@ -173,6 +179,17 @@ export default function Import() {
                 </select>
               </label>
             ))}
+            <label>
+              Transaction ID column <span className="muted">(optional — best dedup key)</span>
+              <select value={cols.bankId} onChange={(e) => setCols({ ...cols, bankId: Number(e.target.value) })}>
+                <option value={-1}>None</option>
+                {Array.from({ length: previewCols }, (_, i) => (
+                  <option key={i} value={i}>
+                    {hasHeader ? `${i + 1}: ${grid[0][i]}` : `Column ${i + 1}`}
+                  </option>
+                ))}
+              </select>
+            </label>
           </div>
           {baseAccounts.length > 1 && (
             <label>
@@ -290,10 +307,26 @@ export default function Import() {
           <h2>Import complete</h2>
           <ul>
             <li><strong>{result.imported}</strong> transactions imported</li>
+            <li><strong>{result.autoCategorized}</strong> auto-categorized by rules</li>
             <li><strong>{result.linked}</strong> line items marked cleared</li>
+            {result.needReview > 0 && (
+              <li>
+                <strong>{result.needReview}</strong> imported uncategorized —{' '}
+                <Link to="/transactions">review them</Link>
+              </li>
+            )}
+            {result.moved > 0 && <li><strong>{result.moved}</strong> late-posting bill(s) moved to the period they cleared in</li>}
+            {result.replanned > 0 && (
+              <li><strong>{result.replanned}</strong> recurring plan(s) updated to match, going forward</li>
+            )}
             {result.duplicates > 0 && <li><strong>{result.duplicates}</strong> duplicates skipped</li>}
-            {result.skipped > 0 && <li><strong>{result.skipped}</strong> rows outside your recorded periods skipped</li>}
+            {result.skipped > 0 && <li><strong>{result.skipped}</strong> rows outside your open periods skipped</li>}
           </ul>
+          {result.drift?.length > 0 && (
+            <div className="muted small">
+              Updated going forward: {result.drift.map((d) => d.name).join(', ')}.
+            </div>
+          )}
           <div className="wizard-nav">
             <button className="btn btn-ghost" onClick={() => { setStep('paste'); setRaw(''); setResult(null); }}>
               Import another file

@@ -11,6 +11,7 @@ function publicTemplate(t) {
     id: t.id,
     name: t.name,
     type: t.type,
+    categoryType: t.category_type,
     recurrence: t.recurrence,
     dueDay: t.due_day,
     accountId: t.account_id,
@@ -52,21 +53,42 @@ router.post('/', async (req, res, next) => {
     const { name, type } = req.body || {};
     if (typeof name !== 'string' || !name.trim()) bad('name is required');
     if (!['expense', 'income'].includes(type)) bad('type must be expense or income');
-    const { recurrence, dueDay } = validateRecurrence(req.body);
+    const categoryType = req.body.categoryType === 'tag' ? 'tag' : 'recurring';
+    const { recurrence, dueDay } = categoryType === 'tag'
+      ? { recurrence: 'every_period', dueDay: null } // inert for tags
+      : validateRecurrence(req.body);
     const amount = requireCents(req.body.amountCents ?? 0, 'amountCents');
+    // Resolve the owning account (explicit or the default) so the category
+    // can inherit its start date.
     let accountId = null;
+    let account = null;
     if (req.body.accountId !== undefined && req.body.accountId !== null) {
       const { rows: acct } = await q(
-        'SELECT id FROM accounts WHERE id = $1 AND budget_id = $2 AND currency IS NULL',
+        'SELECT id, started_on::text AS started_on FROM accounts WHERE id = $1 AND budget_id = $2 AND currency IS NULL',
         [req.body.accountId, req.budget.id]
       );
       if (!acct.length) bad('Categories can only clear to household-currency accounts');
-      accountId = req.body.accountId;
+      accountId = acct[0].id;
+      account = acct[0];
+    } else {
+      const { rows: def } = await q(
+        `SELECT id, started_on::text AS started_on FROM accounts
+         WHERE budget_id = $1 AND is_default AND NOT archived AND currency IS NULL`,
+        [req.budget.id]
+      );
+      account = def[0] || null;
     }
-    // Default the first amount to be effective from the start of the current
-    // period, so the category shows up in the period the user is looking at.
     const cfg = await getConfig(req.budget.id);
-    const defaultEffective = cfg ? periodContaining(cfg, todayISO()).start : todayISO();
+    // Valid-from defaults to the account's start date, so the category only
+    // applies from when tracking began for that account.
+    const startDate = req.body.startDate
+      ? requireDate(req.body.startDate, 'startDate')
+      : (account?.started_on ?? null);
+    // The first amount takes effect from the category's start (or the current
+    // period, if the account has no start date), so its tracked periods are
+    // populated.
+    const defaultEffective = startDate
+      ?? (cfg ? periodContaining(cfg, todayISO()).start : todayISO());
     const effective = req.body.effectiveStartDate
       ? requireDate(req.body.effectiveStartDate, 'effectiveStartDate')
       : defaultEffective;
@@ -77,14 +99,17 @@ router.post('/', async (req, res, next) => {
       [req.budget.id, type]
     );
     const { rows } = await client.query(
-      `INSERT INTO category_templates (budget_id, name, type, recurrence, due_day, sort_order, account_id)
-       VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id`,
-      [req.budget.id, name.trim(), type, recurrence, dueDay, maxOrder[0].next, accountId]
+      `INSERT INTO category_templates (budget_id, name, type, recurrence, due_day, sort_order, account_id, category_type, start_date)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING id`,
+      [req.budget.id, name.trim(), type, recurrence, dueDay, maxOrder[0].next, accountId, categoryType, startDate]
     );
-    await client.query(
-      'INSERT INTO category_amount_history (category_template_id, amount_cents, effective_start_date) VALUES ($1, $2, $3)',
-      [rows[0].id, amount, effective]
-    );
+    // Tags have no planned amount, so no amount history either.
+    if (categoryType !== 'tag') {
+      await client.query(
+        'INSERT INTO category_amount_history (category_template_id, amount_cents, effective_start_date) VALUES ($1, $2, $3)',
+        [rows[0].id, amount, effective]
+      );
+    }
     await client.query('COMMIT');
 
     if (cfg) await ensureMaterialized(req.budget.id, cfg); // adds the line item to the current period
@@ -126,6 +151,11 @@ router.patch('/:id', async (req, res, next) => {
       ? (body.endDate === null ? null : requireDate(body.endDate, 'endDate'))
       : t.end_date;
     const archived = body.archived !== undefined ? Boolean(body.archived) : t.archived;
+    let categoryType = t.category_type;
+    if (body.categoryType !== undefined && body.categoryType !== t.category_type) {
+      if (!['recurring', 'tag'].includes(body.categoryType)) bad('categoryType must be recurring or tag');
+      categoryType = body.categoryType;
+    }
     let accountId = t.account_id;
     if (body.accountId !== undefined) {
       if (body.accountId === null) {
@@ -142,9 +172,21 @@ router.patch('/:id', async (req, res, next) => {
 
     await q(
       `UPDATE category_templates SET name = $1, recurrence = $2, due_day = $3, start_date = $4,
-         end_date = $5, archived = $6, account_id = $7 WHERE id = $8`,
-      [name, recurrence, dueDay, startDate, endDate, archived, accountId, id]
+         end_date = $5, archived = $6, account_id = $7, category_type = $9 WHERE id = $8`,
+      [name, recurrence, dueDay, startDate, endDate, archived, accountId, id, categoryType]
     );
+    // Converting a recurring category to a tag withdraws its pending plan:
+    // uncleared line items in open periods disappear (cleared history stays,
+    // closed periods are never touched). Tag -> recurring starts planning at
+    // $0 until an amount is recorded.
+    if (categoryType === 'tag' && t.category_type === 'recurring') {
+      await q(
+        `DELETE FROM line_items li USING pay_periods pp
+         WHERE pp.id = li.pay_period_id AND li.category_template_id = $1
+           AND NOT li.cleared AND pp.closed_at IS NULL`,
+        [id]
+      );
+    }
     const templates = await loadTemplates(req.budget.id, { includeArchived: true });
     res.json({ category: publicTemplate(templates.find((x) => x.id === id)) });
   } catch (err) {

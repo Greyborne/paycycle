@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import { q } from '../db.js';
+import { decryptSecret, encryptSecret } from '../services/secrets.js';
 import { config } from '../config.js';
 import { bad } from '../validation.js';
 import { plaidEnabled, plaidClient, syncBudget } from '../services/plaid.js';
@@ -79,7 +80,7 @@ router.post('/exchange', async (req, res, next) => {
        VALUES ($1, $2, $3, $4, $5)
        ON CONFLICT (item_id) DO UPDATE SET access_token = $3
        RETURNING id`,
-      [req.budget.id, exchange.item_id, exchange.access_token, institution, req.userId]
+      [req.budget.id, exchange.item_id, encryptSecret(exchange.access_token), institution, req.userId]
     );
     for (const acct of accounts.accounts) {
       await q(
@@ -141,7 +142,7 @@ router.delete('/items/:id', async (req, res, next) => {
     );
     if (!rows.length) return res.status(404).json({ error: 'Bank connection not found' });
     try {
-      await plaidClient().itemRemove({ access_token: rows[0].access_token });
+      await plaidClient().itemRemove({ access_token: decryptSecret(rows[0].access_token) });
     } catch {
       // The item may already be revoked on Plaid's side; still remove ours.
     }

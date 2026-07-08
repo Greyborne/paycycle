@@ -1,7 +1,11 @@
 import { Configuration, PlaidApi, PlaidEnvironments } from 'plaid';
 import { config } from '../config.js';
 import { pool, q } from '../db.js';
-import { getConfig, ensureMaterialized } from './budget.js';
+import {
+  getConfig, ensureMaterialized, loadTemplates, driftFor, clearLineItemForTransaction, setAmountGoingForward,
+} from './budget.js';
+import { decryptSecret, encryptSecret, isEncrypted } from './secrets.js';
+import { loadRules, firstMatchingCategory } from './rules.js';
 
 // Bank sync is optional: without PLAID_CLIENT_ID/PLAID_SECRET the feature is
 // hidden and no Plaid code runs.
@@ -35,61 +39,81 @@ function toTxn(plaidTxn) {
   };
 }
 
-async function matchRule(clientDb, budgetId, description) {
-  if (!description) return null;
-  const { rows } = await clientDb.query(
-    'SELECT pattern, category_template_id FROM import_rules WHERE budget_id = $1 ORDER BY length(pattern) DESC',
-    [budgetId]
-  );
-  const lower = description.toLowerCase();
+// One-time boot pass: encrypt any legacy plaintext access tokens.
+export async function encryptLegacyTokens() {
+  const { rows } = await q('SELECT id, access_token FROM plaid_items');
+  let n = 0;
   for (const r of rows) {
-    if (lower.includes(r.pattern.toLowerCase())) return r.category_template_id;
+    if (isEncrypted(r.access_token)) continue;
+    await q('UPDATE plaid_items SET access_token = $1 WHERE id = $2', [encryptSecret(r.access_token), r.id]);
+    n++;
   }
-  return null;
+  return n;
 }
 
-async function insertSyncedTxn(clientDb, budget, link, plaidTxn, userId, results) {
+async function insertSyncedTxn(clientDb, ctx, link, plaidTxn, userId, results) {
+  const { budget } = ctx;
   const t = toTxn(plaidTxn);
   if (t.amountCents === 0) return;
   const { rows: period } = await clientDb.query(
-    'SELECT id FROM pay_periods WHERE budget_id = $1 AND start_date <= $2 AND end_date >= $2 ORDER BY start_date DESC LIMIT 1',
+    'SELECT id, closed_at FROM pay_periods WHERE budget_id = $1 AND start_date <= $2 AND end_date >= $2 ORDER BY start_date DESC LIMIT 1',
     [budget.id, t.date]
   );
   if (!period.length) {
     results.skipped += 1; // before the household's first period, or future-dated
     return;
   }
+  const periodClosed = Boolean(period[0].closed_at);
 
-  // Learned import rules auto-categorize; a match marks the period's line
-  // item cleared with the actual amount, exactly like a confirmed CSV row.
-  let categoryId = await matchRule(clientDb, budget.id, t.description);
-  if (categoryId) {
-    const { rows: cat } = await clientDb.query(
-      'SELECT type FROM category_templates WHERE id = $1 AND budget_id = $2', [categoryId, budget.id]
-    );
-    if (!cat.length) categoryId = null;
-    else t.type = cat[0].type;
+  // Categorization rules auto-match (first match in user order wins). A
+  // recurring match marks the period's line item cleared with the actual
+  // amount, exactly like a confirmed CSV row; a tag match just labels it.
+  // In a CLOSED (frozen) period a recurring match is left uncategorized for
+  // review instead — reconciliation there requires reopening.
+  let categoryId = firstMatchingCategory(ctx.rules, {
+    description: t.description,
+    amountCents: t.amountCents,
+    account: ctx.accountsById.get(link.account_id) || null,
+  });
+  let template = categoryId ? ctx.templatesById.get(categoryId) : null;
+  if (template && periodClosed && template.category_type === 'recurring') {
+    template = null;
+    results.inClosed += 1;
   }
+  if (!template) categoryId = null;
+  else t.type = template.type;
 
   const { rows: inserted } = await clientDb.query(
-    `INSERT INTO transactions (budget_id, user_id, pay_period_id, category_template_id, type, amount_cents, description, date, import_hash, account_id)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+    `INSERT INTO transactions (budget_id, user_id, pay_period_id, category_template_id, type, amount_cents, description, date, import_hash, account_id, categorized_by)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
      ON CONFLICT (budget_id, import_hash) WHERE import_hash IS NOT NULL DO NOTHING
      RETURNING id`,
-    [budget.id, userId, period[0].id, categoryId, t.type, t.amountCents, t.description, t.date, t.hash, link.account_id]
+    [budget.id, userId, period[0].id, categoryId, t.type, t.amountCents, t.description, t.date, t.hash, link.account_id,
+     categoryId ? 'rule' : null]
   );
   if (!inserted.length) {
     results.duplicates += 1;
     return;
   }
   results.added += 1;
-  if (categoryId) {
-    const { rowCount } = await clientDb.query(
-      `UPDATE line_items SET cleared = TRUE, cleared_date = $1, planned_amount_cents = $2, account_id = $3
-       WHERE pay_period_id = $4 AND category_template_id = $5`,
-      [t.date, t.amountCents, link.account_id, period[0].id, categoryId]
-    );
-    if (rowCount) results.cleared += 1;
+  if (template && template.category_type === 'recurring') {
+    const drift = driftFor(budget, template, t.amountCents, t.date);
+    const { cleared, moved } = await clearLineItemForTransaction(clientDb, template, {
+      periodId: period[0].id,
+      date: t.date,
+      amountCents: t.amountCents,
+      accountId: link.account_id,
+      updatePlanned: true,
+    });
+    if (cleared) results.cleared += 1;
+    if (moved) results.moved += 1;
+    // A material difference from plan auto-updates the recurring amount going
+    // forward, exactly like a confirmed CSV import.
+    if (drift && ctx.cfg) {
+      await setAmountGoingForward(clientDb, budget.id, ctx.cfg, template.id, t.amountCents, t.date);
+      results.drift.push(drift);
+      results.replanned += 1;
+    }
   }
 }
 
@@ -101,7 +125,15 @@ export async function syncBudget(budget, userId) {
   await ensureMaterialized(budget.id, cfg);
 
   const { rows: items } = await q('SELECT * FROM plaid_items WHERE budget_id = $1', [budget.id]);
-  const results = { added: 0, duplicates: 0, updated: 0, removed: 0, skipped: 0, cleared: 0, notReady: 0 };
+  const results = { added: 0, duplicates: 0, updated: 0, removed: 0, skipped: 0, cleared: 0, moved: 0, inClosed: 0, notReady: 0, replanned: 0, drift: [] };
+  const { rows: accountRows } = await q('SELECT * FROM accounts WHERE budget_id = $1', [budget.id]);
+  const ctx = {
+    budget,
+    cfg,
+    rules: await loadRules(budget.id),
+    templatesById: new Map((await loadTemplates(budget.id, { includeArchived: true })).map((t) => [t.id, t])),
+    accountsById: new Map(accountRows.map((a) => [a.id, a])),
+  };
 
   for (const item of items) {
     const { rows: links } = await q(
@@ -118,7 +150,7 @@ export async function syncBudget(budget, userId) {
         let data;
         try {
           ({ data } = await plaidClient().transactionsSync({
-            access_token: item.access_token,
+            access_token: decryptSecret(item.access_token),
             cursor,
             count: 500,
           }));
@@ -135,7 +167,7 @@ export async function syncBudget(budget, userId) {
           if (txn.pending) continue; // only posted transactions enter the books
           const link = linkByPlaidAccount.get(txn.account_id);
           if (!link) continue;
-          await insertSyncedTxn(clientDb, budget, link, txn, userId, results);
+          await insertSyncedTxn(clientDb, ctx, link, txn, userId, results);
         }
         for (const txn of data.modified) {
           if (txn.pending) continue;
@@ -153,7 +185,7 @@ export async function syncBudget(budget, userId) {
             [t.amountCents, t.description, t.date, period[0].id, budget.id, t.hash]
           );
           if (rowCount) results.updated += 1;
-          else await insertSyncedTxn(clientDb, budget, link, txn, userId, results);
+          else await insertSyncedTxn(clientDb, ctx, link, txn, userId, results);
         }
         for (const removed of data.removed) {
           const { rowCount } = await clientDb.query(

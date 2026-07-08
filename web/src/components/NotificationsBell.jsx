@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom';
 import { api } from '../api.js';
 import { useAuth } from '../App.jsx';
 import { fmtDate, fmtMoney } from '../format.js';
+import { BellIcon } from '../icons.jsx';
 
 // Computed in-app notifications: upcoming bills, projection warnings, and
 // activity nudges. Dismissals are per user and per instance.
@@ -44,7 +45,7 @@ export default function NotificationsBell() {
         aria-label={`Notifications (${items.length})`}
         onClick={() => setOpen(!open)}
       >
-        🔔
+        <BellIcon />
         {items.length > 0 && <span className="bell-count">{items.length}</span>}
       </button>
       {open && (

@@ -1,6 +1,6 @@
 import { q } from '../db.js';
 import {
-  buildProjection, effectiveAmount, ensureMaterialized, getConfig, loadTemplates,
+  buildProjection, effectiveAmount, ensureMaterialized, getAccounts, getConfig, loadTemplates,
 } from './budget.js';
 import { addDays, daysBetween, monthlyOccurrences, periodContaining, todayISO } from './schedule.js';
 
@@ -45,27 +45,35 @@ export async function computeNotifications(budget, cfg) {
     }
   }
 
-  // 2. Projection threshold crossings within 12 months.
-  const projection = await buildProjection(budget, cfg, { months: 12 });
-  if (projection.firstNegative) {
-    out.push({
-      key: `negative:${projection.firstNegative.start}`,
-      severity: 'critical',
-      title: 'Projected to go negative',
-      amountCents: projection.firstNegative.estBalance,
-      date: projection.firstNegative.start,
-      link: `/period/${projection.firstNegative.start}`,
-    });
-  } else if (projection.firstBelowWarning) {
-    out.push({
-      key: `warning:${projection.firstBelowWarning.start}`,
-      severity: 'warning',
-      title: 'Projected below your warning threshold',
-      amountCents: projection.firstBelowWarning.estBalance,
-      date: projection.firstBelowWarning.start,
-      link: `/period/${projection.firstBelowWarning.start}`,
-    });
+  // 2. Projection threshold crossings within 12 months, per base-currency
+  // account: a healthy household total can hide an overdraft in one account,
+  // so each account's own projection is checked.
+  const baseAccounts = (await getAccounts(budget.id)).filter((a) => !a.currency && !a.archived);
+  let projection = null; // any per-account run also carries the shared period entries
+  for (const account of baseAccounts) {
+    const acctProjection = await buildProjection(budget, cfg, { months: 12, accountId: account.id });
+    projection = acctProjection;
+    if (acctProjection.firstNegative) {
+      out.push({
+        key: `negative:${account.id}:${acctProjection.firstNegative.start}`,
+        severity: 'critical',
+        title: `${account.name} projected to go negative`,
+        amountCents: acctProjection.firstNegative.estBalance,
+        date: acctProjection.firstNegative.start,
+        link: `/period/${acctProjection.firstNegative.start}`,
+      });
+    } else if (acctProjection.firstBelowWarning) {
+      out.push({
+        key: `warning:${account.id}:${acctProjection.firstBelowWarning.start}`,
+        severity: 'warning',
+        title: `${account.name} projected below your warning threshold`,
+        amountCents: acctProjection.firstBelowWarning.estBalance,
+        date: acctProjection.firstBelowWarning.start,
+        link: `/period/${acctProjection.firstBelowWarning.start}`,
+      });
+    }
   }
+  if (!projection) projection = await buildProjection(budget, cfg, { months: 12 });
 
   // 3. Current period ends soon with uncleared items.
   const current = projection.entries[projection.currentIndex];

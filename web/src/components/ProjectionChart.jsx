@@ -2,7 +2,7 @@ import React, { useMemo, useRef, useState } from 'react';
 import { fmtDate, fmtMoney, fmtMoneyCompact, fmtRange } from '../format.js';
 
 // Estimated-running-balance projection: one series over pay periods, so no
-// legend (the card title names it). 2px line, ~10% area wash above zero,
+// legend (the card title names it). 2px line, gradient area wash above zero,
 // hairline solid grid, crosshair + tooltip snapping to the nearest period.
 
 const H = 280;
@@ -74,6 +74,19 @@ export default function ProjectionChart({ entries, currency, firstNegative, widt
         onPointerMove={onMove}
         onPointerLeave={() => setHover(null)}
       >
+        <defs>
+          {/* accent → transparent wash under the line; colors come from CSS stops.
+             userSpaceOnUse pins the fade to the plot height instead of the path
+             bbox, so a rising line doesn't turn the whole fill muddy. */}
+          <linearGradient
+            id="projArea" gradientUnits="userSpaceOnUse"
+            x1="0" y1={PAD.top} x2="0" y2={Math.max(y(0), H - PAD.bottom)}
+          >
+            <stop className="area-stop-top" offset="0" />
+            <stop className="area-stop-bottom" offset="1" />
+          </linearGradient>
+        </defs>
+
         {/* gridlines + y ticks */}
         {ticks.map((t) => (
           <g key={t}>
@@ -118,7 +131,10 @@ export default function ProjectionChart({ entries, currency, firstNegative, widt
 
         {/* x labels */}
         {xLabels.map(({ e, i }) => (
-          <text key={e.start} className="tick" x={x(i)} y={H - 8} textAnchor="middle">
+          <text
+            key={e.start} className="tick" x={x(i)} y={H - 8}
+            textAnchor={i === entries.length - 1 ? 'end' : i === 0 ? 'start' : 'middle'}
+          >
             {fmtDate(e.start, detailed ? { month: 'short', day: 'numeric' } : { month: 'short', year: '2-digit' })}
           </text>
         ))}

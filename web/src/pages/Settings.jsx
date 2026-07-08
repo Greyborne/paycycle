@@ -3,6 +3,7 @@ import { api } from '../api.js';
 import { useAuth } from '../App.jsx';
 import { centsToInput, parseMoney } from '../format.js';
 import { CadenceFields, cadenceBody } from './Onboarding.jsx';
+import { THEME_MODES, useTheme } from '../App.jsx';
 import HouseholdCard from '../components/HouseholdCard.jsx';
 import AccountsCard from '../components/AccountsCard.jsx';
 
@@ -10,6 +11,7 @@ const CURRENCIES = ['USD', 'EUR', 'GBP', 'CAD', 'AUD', 'NZD', 'JPY', 'CHF', 'SEK
 
 export default function Settings() {
   const { refreshUser } = useAuth();
+  const { themeMode, setThemeMode } = useTheme();
   const [loaded, setLoaded] = useState(false);
   const [currency, setCurrency] = useState('USD');
   const [emailEnabled, setEmailEnabled] = useState(false);
@@ -17,6 +19,7 @@ export default function Settings() {
   const [low, setLow] = useState('');
   const [healthy, setHealthy] = useState('');
   const [warning, setWarning] = useState('');
+  const [drift, setDrift] = useState('5.00');
   const [cadenceForm, setCadenceForm] = useState(null);
   const [changeCadence, setChangeCadence] = useState(false);
   const [message, setMessage] = useState(null);
@@ -30,6 +33,7 @@ export default function Settings() {
       setLow(centsToInput(user.thresholdLowCents));
       setHealthy(centsToInput(user.thresholdHealthyCents));
       setWarning(centsToInput(user.warningThresholdCents));
+      setDrift(centsToInput(user.driftThresholdCents ?? 500));
       setCadenceForm({
         cadence: payPeriodConfig.cadence,
         anchorDate: payPeriodConfig.anchorDate || '',
@@ -53,6 +57,7 @@ export default function Settings() {
         emailNotifications,
         thresholdLowCents: parseMoney(low) ?? 0,
         thresholdHealthyCents: parseMoney(healthy) ?? 0,
+        driftThresholdCents: parseMoney(drift) ?? 500,
         warningThresholdCents: parseMoney(warning) ?? 0,
       };
       if (changeCadence) Object.assign(body, cadenceBody(cadenceForm));
@@ -67,7 +72,6 @@ export default function Settings() {
 
   return (
     <div className="settings-page">
-      <h1>Settings</h1>
       <form onSubmit={save}>
         <section className="card">
           <h2>Money</h2>
@@ -85,9 +89,9 @@ export default function Settings() {
         <section className="card">
           <h2>Balance health colors</h2>
           <p className="muted small">
-            Balances are color-coded: <strong>red</strong> below zero, <strong>pink</strong> up to the
-            “thin” threshold, <strong>light blue</strong> up to the “healthy” threshold, <strong>solid
-            blue</strong> above it. Tune these to your own risk tolerance.
+            Balances are color-coded: <strong>red</strong> below zero, <strong>amber</strong> up to the
+            “thin” threshold, <strong>blue</strong> up to the “healthy” threshold, <strong>green</strong>{' '}
+            above it. Tune these to your own risk tolerance.
           </p>
           <div className="field-row">
             <label>
@@ -105,6 +109,32 @@ export default function Settings() {
                 title="Flag the first future period projected below this amount (0 = only flag negative)"
               />
             </label>
+            <label>
+              Drift alert threshold
+              <input
+                type="text" inputMode="decimal" value={drift} onChange={(e) => setDrift(e.target.value)}
+                title="Suggest updating a recurring plan when a transaction differs from it by more than this (or 5%, whichever is larger)"
+              />
+            </label>
+          </div>
+        </section>
+
+        <section className="card">
+          <h2>Appearance</h2>
+          <p className="muted small">
+            Choose light or dark, or follow your device setting. This is stored on this browser only.
+          </p>
+          <div className="range-picker" role="group" aria-label="Theme">
+            {THEME_MODES.map((m) => (
+              <button
+                key={m}
+                type="button"
+                className={`btn btn-ghost ${themeMode === m ? 'active' : ''}`}
+                onClick={() => setThemeMode(m)}
+              >
+                {m[0].toUpperCase() + m.slice(1)}
+              </button>
+            ))}
           </div>
         </section>
 

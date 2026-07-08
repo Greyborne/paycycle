@@ -42,11 +42,33 @@ paper, but three bills haven't posted yet") is the signal.
   light blue / solid blue — your risk tolerance, not ours).
 - **Misc transactions**: one-off uncategorized amounts per period, income or
   expense, feeding the cleared totals — no formal category needed.
+- **Tag categories**: label one-off spending ("Gas", "Gear & Clothing")
+  without creating a recurring plan. Tags count like misc in the balance
+  math but report per category, and the rules engine can assign them.
+- **Transactions page**: every imported/synced/manual transaction in one
+  sortable, filterable table — inline category assignment (recurring
+  categories clear the matching pay-period line item; manual choices are
+  never overridden by rules), bulk assign/delete, and a "re-run rules"
+  action scoped to uncategorized rows.
+- **Categorization rules**: an ordered, spreadsheet-style rule table
+  (description/account/institution/amount conditions, AND within a rule,
+  first match wins) with a live "matches N existing transactions" preview
+  while editing. Confirming matches during import still learns rules
+  automatically.
+- **Drift alerts**: when a matched transaction differs from the recurring
+  plan by more than a configurable threshold (default $5 or 5%), PayCycle
+  offers to record the new amount going forward using the same
+  effective-dated history that powers the projection.
 - **Live bank sync (Plaid)**: connect a bank through Plaid Link, map each
   bank account to a PayCycle account, and pull posted transactions on demand.
   Synced rows flow through the same pipeline as CSV imports — duplicate-safe
   (cursor + per-transaction hash), auto-categorized by your learned rules,
   and rule matches mark the period's line item cleared at the actual amount.
+  Access tokens are encrypted at rest (AES-256-GCM keyed from
+  `SESSION_SECRET`) and never sent to the browser. Plaid requires your own
+  developer credentials (client ID/secret and environment — sandbox or
+  production) via the environment variables below; without them the app is
+  fully functional on CSV import alone.
   Optional: the feature is hidden unless `PLAID_CLIENT_ID`/`PLAID_SECRET`
   are set (sandbox keys are free at dashboard.plaid.com).
 - **CSV bank-statement import** with auto-categorization: map your bank's
@@ -210,6 +232,20 @@ effective-dated amounts. Notes on the edges:
   it, and the sum across accounts always equals the household's actual
   balance. Archiving an account hides it from pickers but keeps its history
   in the totals.
+
+## Publishing a release image
+
+The image is plain multi-arch friendly (pure-JS dependencies, `node:22-alpine`
+base). To build and push amd64 + arm64 to a registry:
+
+```bash
+docker login
+docker buildx create --use          # once, if you don't have a builder
+IMAGE=yourname/paycycle ./scripts/publish-image.sh 0.1.0
+```
+
+Self-hosters can then swap `build: .` for `image: yourname/paycycle:0.1.0` in
+`docker-compose.yml`.
 
 ## Development
 

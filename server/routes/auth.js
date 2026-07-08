@@ -20,6 +20,7 @@ function publicUser(user, budget) {
     emailNotifications: user.email_notifications,
     currency: budget.currency,
     thresholdLowCents: budget.threshold_low_cents,
+    driftThresholdCents: budget.drift_threshold_cents,
     thresholdHealthyCents: budget.threshold_healthy_cents,
     warningThresholdCents: budget.warning_threshold_cents,
     onboardingComplete: budget.onboarding_complete,

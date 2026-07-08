@@ -22,6 +22,7 @@ import householdRoutes from './routes/household.js';
 import accountRoutes from './routes/accounts.js';
 import notificationRoutes from './routes/notifications.js';
 import plaidRoutes from './routes/plaid.js';
+import ruleRoutes from './routes/rules.js';
 
 const app = express();
 app.set('trust proxy', config.trustProxy);
@@ -52,6 +53,7 @@ app.use('/api/household', budgetScoped, householdRoutes);
 app.use('/api/accounts', budgetScoped, accountRoutes);
 app.use('/api/notifications', budgetScoped, notificationRoutes);
 app.use('/api/plaid', budgetScoped, plaidRoutes);
+app.use('/api/rules', budgetScoped, ruleRoutes);
 
 app.use('/api', (req, res) => res.status(404).json({ error: 'Not found' }));
 
@@ -70,6 +72,16 @@ app.use((err, req, res, next) => {
 
 await waitForDb();
 await migrate();
+try {
+  const { encryptLegacyTokens } = await import('./services/plaid.js');
+  const enc = await encryptLegacyTokens();
+  if (enc) console.log(`[paycycle] encrypted ${enc} legacy bank token(s)`);
+  const { backfillClosedSnapshots } = await import('./services/budget.js');
+  const n = await backfillClosedSnapshots();
+  if (n) console.log(`[paycycle] froze cleared-balance snapshots for ${n} closed period(s)`);
+} catch (err) {
+  console.error('[paycycle] snapshot backfill failed:', err);
+}
 app.listen(config.port, () => {
   console.log(`[paycycle] listening on port ${config.port}`);
 });

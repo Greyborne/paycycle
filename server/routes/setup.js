@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { pool } from '../db.js';
-import { bad, parseCadenceConfig, requireCents, requireCurrency } from '../validation.js';
+import { bad, parseCadenceConfig, requireCents, requireCurrency, requireDate } from '../validation.js';
 import { ensureMaterialized, getConfig } from '../services/budget.js';
 import { periodContaining, todayISO } from '../services/schedule.js';
 
@@ -19,6 +19,11 @@ router.post('/', async (req, res, next) => {
     const startingBalance = requireCents(req.body.startingBalanceCents ?? 0, 'startingBalanceCents');
     const currency = requireCurrency(req.body.currency || req.budget.currency);
     const categories = Array.isArray(req.body.categories) ? req.body.categories : [];
+    // Tracking begins at the pay period containing the chosen start date
+    // (defaults to today's period). The starting balance is the balance going
+    // into that period; earlier periods hold no activity.
+    const startDate = req.body.startDate ? requireDate(req.body.startDate, 'startDate') : todayISO();
+    const startOn = periodContaining(cfg, startDate).start;
 
     for (const c of categories) {
       if (typeof c.name !== 'string' || !c.name.trim()) bad('Every category needs a name');
@@ -43,27 +48,28 @@ router.post('/', async (req, res, next) => {
       'UPDATE budgets SET currency = $1, onboarding_complete = TRUE WHERE id = $2',
       [currency, req.budget.id]
     );
-    // The wizard's starting balance seeds the household's default account.
+    // The wizard's starting balance seeds the household's default account,
+    // dated to the tracking start.
     await client.query(
-      `UPDATE accounts SET starting_balance_cents = $1
+      `UPDATE accounts SET starting_balance_cents = $1, started_on = $3
        WHERE budget_id = $2 AND is_default AND NOT archived`,
-      [startingBalance, req.budget.id]
+      [startingBalance, req.budget.id, startOn]
     );
 
-    // Initial amounts take effect from the start of the current period so the
-    // very first period the user sees is fully populated.
-    const effectiveFrom = periodContaining(cfg, todayISO()).start;
+    // Initial categories are valid from the tracking start and their amounts
+    // take effect there, so every tracked period is populated and nothing
+    // appears before it.
     let order = 0;
     for (const c of categories) {
       const { rows } = await client.query(
-        `INSERT INTO category_templates (budget_id, name, type, recurrence, due_day, sort_order)
-         VALUES ($1, $2, $3, $4, $5, $6) RETURNING id`,
+        `INSERT INTO category_templates (budget_id, name, type, recurrence, due_day, sort_order, start_date)
+         VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id`,
         [req.budget.id, c.name.trim(), c.type, c.recurrence === 'monthly' ? 'monthly' : 'every_period',
-         c.recurrence === 'monthly' ? c.dueDay : null, order++]
+         c.recurrence === 'monthly' ? c.dueDay : null, order++, startOn]
       );
       await client.query(
         'INSERT INTO category_amount_history (category_template_id, amount_cents, effective_start_date) VALUES ($1, $2, $3)',
-        [rows[0].id, c.amountCents ?? 0, effectiveFrom]
+        [rows[0].id, c.amountCents ?? 0, startOn]
       );
     }
     await client.query('COMMIT');

@@ -47,6 +47,13 @@ function AccountRow({ account, currency, onPatch }) {
           }}
         />
       </td>
+      <td>
+        <input
+          type="date" defaultValue={account.startedOn ?? ''} disabled={account.archived}
+          title="When tracking began — the starting balance is as of the day before, and new categories on this account default to it"
+          onChange={(e) => { if (e.target.value) onPatch(account.id, { startedOn: e.target.value }); }}
+        />
+      </td>
       <td className="num">{fmtMoney(account.balanceCents, displayCurrency)}</td>
       <td className="center">
         <input
@@ -73,6 +80,7 @@ export default function AccountsCard() {
   const [name, setName] = useState('');
   const [type, setType] = useState('checking');
   const [starting, setStarting] = useState('');
+  const [startedOn, setStartedOn] = useState('');
   const [accountCurrency, setAccountCurrency] = useState('');
   const [error, setError] = useState(null);
 
@@ -99,11 +107,13 @@ export default function AccountsCard() {
           name,
           type,
           startingBalanceCents: parseMoney(starting) ?? 0,
+          startedOn: startedOn || undefined,
           currency: accountCurrency.trim() || undefined,
         },
       });
       setName('');
       setStarting('');
+      setStartedOn('');
       setAccountCurrency('');
       reload();
     } catch (err) {
@@ -117,14 +127,16 @@ export default function AccountsCard() {
     <section className="card">
       <h2>Bank accounts</h2>
       <p className="muted small">
-        Actual balances are tracked per account; cleared items and transactions are attributed to
-        one. The projection always covers the household total ({fmtMoney(total, user.currency)}).
+        Balances and projections are tracked per account — use the switcher in the top bar to change
+        which one you're viewing, and set each category's account on the Categories page. The starting
+        balance is what the account held going into its <em>tracking from</em> date; categories on the
+        account default to that date. Net worth across all accounts is {fmtMoney(total, user.currency)}.
         Archiving hides an account from pickers but keeps its history in the totals.
       </p>
       <table className="table">
         <thead>
           <tr>
-            <th>Name</th><th>Type</th><th className="num">Starting balance</th>
+            <th>Name</th><th>Type</th><th className="num">Starting balance</th><th>Tracking from</th>
             <th className="num">Current balance</th><th className="center">Default</th><th />
           </tr>
         </thead>
@@ -140,6 +152,10 @@ export default function AccountsCard() {
           {TYPES.map((t) => <option key={t} value={t}>{t}</option>)}
         </select>
         <input value={starting} onChange={(e) => setStarting(e.target.value)} inputMode="decimal" placeholder="Starting balance" />
+        <input
+          type="date" value={startedOn} onChange={(e) => setStartedOn(e.target.value)}
+          title="Tracking start — defaults to the current pay period"
+        />
         <input
           value={accountCurrency} onChange={(e) => setAccountCurrency(e.target.value.toUpperCase())}
           maxLength={3} placeholder={user.currency} style={{ width: '5.5rem' }}

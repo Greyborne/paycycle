@@ -92,6 +92,7 @@ export default function BankSync() {
         setMessage(
           `Sync complete: ${r.added} new, ${r.cleared} line items cleared, ${r.updated} updated, ` +
           `${r.removed} removed${r.duplicates ? `, ${r.duplicates} already imported` : ''}` +
+          `${r.replanned ? `, ${r.replanned} recurring plan(s) updated going forward` : ''}` +
           `${r.skipped ? `, ${r.skipped} outside your recorded periods` : ''}.`
         );
       }
