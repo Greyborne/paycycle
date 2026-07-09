@@ -467,15 +467,47 @@ input[type="checkbox"] { accent-color: var(--accent); }
 /* the period window and yearly report want every pixel; lift the content cap */
 .content:has(.periods-page), .content:has(.reports-page) { max-width: none; }
 
-.period-toolbar {
+/* Tighten the top of the pay-period page: a slimmer app header and less gap
+   above the columns, so more of the money is on screen at once. */
+.main:has(.periods-page) .content-header { padding-top: 0.55rem; padding-bottom: 0.55rem; }
+.content:has(.periods-page) { padding-top: 0.9rem; }
+
+/* Previous/Next as arrows flanking the grid, pinned alongside the sticky
+   column heads so they stay reachable while scrolling. */
+.periods-layout { display: flex; align-items: flex-start; gap: 0.5rem; }
+.period-nav-arrow {
+  position: sticky;
+  top: calc(var(--sticky-top, 0px) + 1.4rem);
+  flex: none;
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 1rem;
-  margin-bottom: 1.1rem;
+  justify-content: center;
+  width: 2rem;
+  height: 2.8rem;
+  font-size: 1.5rem;
+  line-height: 1;
+  color: var(--muted);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  text-decoration: none;
 }
+.period-nav-arrow:hover { color: var(--accent-hi); border-color: var(--accent); }
 
-.periods-grid { display: grid; gap: 1.1rem; align-items: start; }
+.periods-grid { flex: 1; min-width: 0; display: grid; gap: 1.1rem; align-items: start; }
+
+/* The pinned band: date-range head + the balance summary tiles. */
+.period-col-sticky {
+  position: sticky;
+  top: var(--sticky-top, 0px);
+  z-index: 5;
+  background: var(--page);
+  display: flex;
+  flex-direction: column;
+  gap: 1.1rem;
+  padding-bottom: 1.1rem;
+}
+.period-col-sticky > .card { margin-bottom: 0; }
 
 .period-col { min-width: 0; }
 .period-col-head {
@@ -483,8 +515,8 @@ input[type="checkbox"] { accent-color: var(--accent); }
   align-items: center;
   justify-content: space-between;
   gap: 0.75rem;
-  padding-top: 0.9rem;
-  padding-bottom: 0.9rem;
+  padding-top: 0.55rem;
+  padding-bottom: 0.55rem;
 }
 .period-col-head h2 { margin: 0; }
 /* Reserve the action-row height in every column so a Close/Reopen button (or
@@ -494,8 +526,9 @@ input[type="checkbox"] { accent-color: var(--accent); }
 /* Sized to sit level with the status chips beside it. */
 .period-close-btn { padding: 0.12rem 0.7rem; border-radius: 999px; font-size: 0.88em; font-weight: 600; }
 
-/* The lifecycle-current column gets an accent treatment beyond its badge. */
-.period-col-current > .card,
+/* The lifecycle-current column gets an accent treatment beyond its badge.
+   (Cards live inside .period-col-sticky now, so match them by descent.) */
+.period-col-current .card,
 .period-col-current .period-table {
   border-color: color-mix(in srgb, var(--accent) 40%, transparent);
 }
