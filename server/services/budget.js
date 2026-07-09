@@ -382,13 +382,19 @@ export async function ensureMaterialized(budgetId, cfg) {
       await syncLineItems(client, rows[0], templates, defaultAccountId);
       next = periodAfter(cfg, next);
     }
-    // Current period may predate a just-added category: top up its items.
-    // Never touch a closed period — its contents are frozen.
-    const { rows: current } = await client.query(
-      'SELECT * FROM pay_periods WHERE budget_id = $1 AND start_date <= $2 AND end_date >= $2 ORDER BY start_date DESC LIMIT 1',
-      [budgetId, today]
+    // A category can be added after periods already exist. Top up every open
+    // (non-closed) period so its line items land in all the periods it applies
+    // to — not just the one containing today. Without this, a monthly category
+    // whose due day never falls in today's period (e.g. added on the 8th, due
+    // on the 15th, on a schedule where the current period ends the 14th) would
+    // silently miss every period it belongs to. Closed periods are frozen
+    // snapshots and are never touched; syncLineItems only inserts missing rows
+    // (ON CONFLICT DO NOTHING), so edited amounts on existing items survive.
+    const { rows: openPeriods } = await client.query(
+      'SELECT * FROM pay_periods WHERE budget_id = $1 AND closed_at IS NULL ORDER BY start_date',
+      [budgetId]
     );
-    if (current.length && !current[0].closed_at) await syncLineItems(client, current[0], templates, defaultAccountId);
+    for (const p of openPeriods) await syncLineItems(client, p, templates, defaultAccountId);
     await client.query('COMMIT');
   } catch (err) {
     await client.query('ROLLBACK');
