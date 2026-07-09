@@ -1,0 +1,63 @@
+name: Bug report
+description: Report something that isn't working as expected
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for filing a bug! Please **search [existing issues](https://github.com/Greyborne/paycycle/issues?q=is%3Aissue)** first to avoid duplicates.
+
+        ⚠️ **Do not report security vulnerabilities here** — follow [SECURITY.md](https://github.com/Greyborne/paycycle/blob/main/SECURITY.md) so the report stays private.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: What went wrong, and what did you expect to happen instead?
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Go to '...'
+        2. Add a '...'
+        3. See that '...'
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version / image tag
+      description: "e.g. `chazwall/paycycle:0.2.0`, or the git commit if you built from source."
+    validations:
+      required: true
+  - type: dropdown
+    id: deployment
+    attributes:
+      label: How are you running it?
+      options:
+        - docker-compose (bundled Postgres)
+        - Published image + external Postgres
+        - From source (npm run dev)
+        - Other (describe in "What happened?")
+    validations:
+      required: true
+  - type: textarea
+    id: config
+    attributes:
+      label: Relevant configuration
+      description: >
+        Anything that helps reproduce it — pay-period cadence (weekly/biweekly/semimonthly/monthly/custom),
+        the category's type and recurrence, and any relevant env vars. **Redact secrets.**
+    validations:
+      required: false
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: "Output from `docker logs paycycle-app-1` (or your app container) around the time of the issue. Redact any personal data."
+      render: shell
+    validations:
+      required: false

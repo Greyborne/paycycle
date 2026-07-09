@@ -4,6 +4,15 @@ Thanks for your interest! PayCycle is a small, focused project — contributions
 are welcome, especially bug fixes, deployment improvements, and Phase 2
 features (see the roadmap section of the README).
 
+## Reporting bugs & requesting features
+
+Open an issue using the [bug report](https://github.com/Greyborne/paycycle/issues/new?template=bug_report.yml)
+or [feature request](https://github.com/Greyborne/paycycle/issues/new?template=feature_request.yml)
+template ([search existing issues](https://github.com/Greyborne/paycycle/issues?q=is%3Aissue)
+first). For anything non-trivial, please open an issue before writing code so we
+can agree on the approach. Security vulnerabilities go through
+[SECURITY.md](SECURITY.md), **not** public issues.
+
 ## Development setup
 
 ```bash
@@ -23,8 +32,13 @@ cd web && npm install && npm run dev
 ## Tests
 
 ```bash
-npm test          # unit tests for the schedule/projection engine
+npm test              # unit tests for the schedule/projection engine (no DB)
+npm run test:integration   # budget-engine tests against a real Postgres
 ```
+
+`test:integration` needs a migrated database reachable via `DATABASE_URL` (the
+dev Postgres above works — run `npm run migrate` against it first). CI runs both
+suites; see `.github/workflows/ci.yml`.
 
 Please add tests for any change to the pay-period date math or the projection
 engine — those are the parts users trust with their money.

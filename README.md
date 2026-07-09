@@ -286,6 +286,19 @@ treated as the *record of that line item clearing* — the line item's amount
 carries the value and the transaction does not additionally count as misc, so
 nothing is double-counted.
 
+## Support & contributing
+
+- **Found a bug or want a feature?** Open an issue — pick
+  [Bug report](https://github.com/Greyborne/paycycle/issues/new?template=bug_report.yml)
+  or [Feature request](https://github.com/Greyborne/paycycle/issues/new?template=feature_request.yml).
+  Please [search existing issues](https://github.com/Greyborne/paycycle/issues?q=is%3Aissue)
+  first.
+- **Want to contribute code?** See [CONTRIBUTING.md](CONTRIBUTING.md) — fork,
+  branch, and open a PR against `main`. For anything non-trivial, open an issue
+  first so we can agree on the approach.
+- **Found a security vulnerability?** Please report it privately — see
+  [SECURITY.md](SECURITY.md). Don't file a public issue.
+
 ## License
 
 [MIT](LICENSE)
