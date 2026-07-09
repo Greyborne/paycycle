@@ -279,32 +279,66 @@ function PeriodColumn({ data, currency, userEmail, tags, onChanged }) {
 
   return (
     <div className={`period-col ${period.status === 'current' ? 'period-col-current' : ''}`}>
-      <div className="card period-col-head">
-        <h2>{fmtRange(period.start, period.end)}</h2>
-        <div className="period-col-actions">
-          {period.canClose && (
-            <button className="btn period-close-btn" onClick={() => setClosing(true)}>Close</button>
-          )}
-          {period.canReopen ? (
-            <button
-              type="button"
-              className={`badge ${badgeClass} badge-reopen`}
-              title="Click to reopen this pay period"
-              onClick={reopen}
-            >
-              {badgeLabel} <span aria-hidden="true">↺</span>
-            </button>
-          ) : (
-            <span
-              className={`badge ${badgeClass}`}
-              title={period.status === 'closed'
-                ? 'Reopen the more recent closed periods first — you can only step back one period at a time'
-                : badgeTitle}
-            >
-              {badgeLabel}
-            </span>
-          )}
+      {/* The head + summary stay pinned while the item tables scroll, so the
+          Cleared balance is always visible for reconciling against the bank. */}
+      <div className="period-col-sticky">
+        <div className="card period-col-head">
+          <h2>{fmtRange(period.start, period.end)}</h2>
+          <div className="period-col-actions">
+            {period.canClose && (
+              <button className="btn period-close-btn" onClick={() => setClosing(true)}>Close</button>
+            )}
+            {period.canReopen ? (
+              <button
+                type="button"
+                className={`badge ${badgeClass} badge-reopen`}
+                title="Click to reopen this pay period"
+                onClick={reopen}
+              >
+                {badgeLabel} <span aria-hidden="true">↺</span>
+              </button>
+            ) : (
+              <span
+                className={`badge ${badgeClass}`}
+                title={period.status === 'closed'
+                  ? 'Reopen the more recent closed periods first — you can only step back one period at a time'
+                  : badgeTitle}
+              >
+                {badgeLabel}
+              </span>
+            )}
+          </div>
         </div>
+
+        {summary && (
+          <div className="card">
+            <div className="period-summary">
+              {summary.clearedBalance != null && (
+                <div
+                  className="stat"
+                  title="The account balance entering this period plus everything cleared during it — match it against the bank balance the day before your next paycheck to reconcile"
+                >
+                  <div className="stat-label">Cleared balance</div>
+                  <div className="stat-value">{fmtMoney(summary.clearedBalance, currency)}</div>
+                </div>
+              )}
+              <div className="stat">
+                <div className="stat-label">Estimated running balance</div>
+                <div className="stat-value">
+                  <HealthBadge health={summary.health}>{fmtMoney(summary.estBalance, currency)}</HealthBadge>
+                </div>
+              </div>
+              <div className="stat">
+                <div className="stat-label">Period loss / gain</div>
+                <div className="stat-value">
+                  <HealthBadge health={summary.empty ? 'none' : summary.lossGain < 0 ? 'negative' : 'healthy'}>
+                    {fmtMoney(summary.lossGain, currency)}
+                  </HealthBadge>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
       {closing && (
         <ClosePeriodDialog
@@ -313,36 +347,6 @@ function PeriodColumn({ data, currency, userEmail, tags, onChanged }) {
           onCancel={() => setClosing(false)}
           onDone={() => { setClosing(false); onChanged(); }}
         />
-      )}
-
-      {summary && (
-        <div className="card">
-          <div className="period-summary">
-            {summary.clearedBalance != null && (
-              <div
-                className="stat"
-                title="The account balance entering this period plus everything cleared during it — match it against the bank balance the day before your next paycheck to reconcile"
-              >
-                <div className="stat-label">Cleared balance</div>
-                <div className="stat-value">{fmtMoney(summary.clearedBalance, currency)}</div>
-              </div>
-            )}
-            <div className="stat">
-              <div className="stat-label">Estimated running balance</div>
-              <div className="stat-value">
-                <HealthBadge health={summary.health}>{fmtMoney(summary.estBalance, currency)}</HealthBadge>
-              </div>
-            </div>
-            <div className="stat">
-              <div className="stat-label">Period loss / gain</div>
-              <div className="stat-value">
-                <HealthBadge health={summary.empty ? 'none' : summary.lossGain < 0 ? 'negative' : 'healthy'}>
-                  {fmtMoney(summary.lossGain, currency)}
-                </HealthBadge>
-              </div>
-            </div>
-          </div>
-        </div>
       )}
 
       <ItemTable
@@ -438,6 +442,11 @@ export default function PeriodDetail() {
   const wrapRef = useRef(null);
   const reqRef = useRef(0);
   const [cols, setCols] = useState(1);
+  // Offset the sticky column heads sit at: the app header's height, so they
+  // pin flush beneath it (the header height changes on resize / mobile).
+  const [stickyTop, setStickyTop] = useState(0);
+  // Date-card height, so the flanking nav arrows match it exactly.
+  const [headH, setHeadH] = useState(0);
 
   // Tag categories offered when quick-adding a misc transaction.
   useEffect(() => {
@@ -457,6 +466,17 @@ export default function PeriodDetail() {
     update();
     const ro = new ResizeObserver(update);
     ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+
+  // Track the app header's height so the sticky heads pin right below it.
+  useLayoutEffect(() => {
+    const header = document.querySelector('.content-header');
+    if (!header) return undefined;
+    const measure = () => setStickyTop(header.getBoundingClientRect().height);
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(header);
     return () => ro.disconnect();
   }, []);
 
@@ -485,33 +505,42 @@ export default function PeriodDetail() {
 
   useEffect(() => { load(); }, [load]);
 
+  // Measure a date card once periods render so the nav arrows can match it.
+  useLayoutEffect(() => {
+    const head = wrapRef.current?.querySelector('.period-col-head');
+    if (head) setHeadH(head.getBoundingClientRect().height);
+  }, [periods, cols]);
+
   const nav = periods[0]?.nav;
+  const pageVars = { '--sticky-top': `${stickyTop}px` };
+  if (headH) pageVars['--head-h'] = `${headH}px`;
 
   return (
-    <div className="periods-page" ref={wrapRef}>
-      {nav && (
-        <div className="period-toolbar">
-          <Link className="btn btn-ghost" to={`/period/${nav.prevStart}`}>← Previous</Link>
-          <span className="muted small">
-            {fmtRange(periods[0].period.start, periods[periods.length - 1].period.end)}
-          </span>
-          <Link className="btn btn-ghost" to={`/period/${nav.nextStart}`}>Next →</Link>
-        </div>
-      )}
+    <div className="periods-page" ref={wrapRef} style={pageVars}>
       {error && <p className="form-error">{error}</p>}
       {!error && periods.length === 0 && <div className="page-loading">Loading…</div>}
-      <div className="periods-grid" style={{ gridTemplateColumns: `repeat(${Math.max(periods.length, 1)}, minmax(0, 1fr))` }}>
-        {periods.map((data) => (
-          <PeriodColumn
-            key={data.period.start}
-            data={data}
-            currency={currency}
-            userEmail={user.email}
-            tags={tags}
-            onChanged={load}
-          />
-        ))}
-      </div>
+      {periods.length > 0 && (
+        <div className="periods-layout">
+          {nav && (
+            <Link className="period-nav-arrow" to={`/period/${nav.prevStart}`} aria-label="Previous periods" title="Previous periods">‹</Link>
+          )}
+          <div className="periods-grid" style={{ gridTemplateColumns: `repeat(${Math.max(periods.length, 1)}, minmax(0, 1fr))` }}>
+            {periods.map((data) => (
+              <PeriodColumn
+                key={data.period.start}
+                data={data}
+                currency={currency}
+                userEmail={user.email}
+                tags={tags}
+                onChanged={load}
+              />
+            ))}
+          </div>
+          {nav && (
+            <Link className="period-nav-arrow" to={`/period/${nav.nextStart}`} aria-label="Next periods" title="Next periods">›</Link>
+          )}
+        </div>
+      )}
     </div>
   );
 }
