@@ -445,6 +445,8 @@ export default function PeriodDetail() {
   // Offset the sticky column heads sit at: the app header's height, so they
   // pin flush beneath it (the header height changes on resize / mobile).
   const [stickyTop, setStickyTop] = useState(0);
+  // Date-card height, so the flanking nav arrows match it exactly.
+  const [headH, setHeadH] = useState(0);
 
   // Tag categories offered when quick-adding a misc transaction.
   useEffect(() => {
@@ -503,10 +505,18 @@ export default function PeriodDetail() {
 
   useEffect(() => { load(); }, [load]);
 
+  // Measure a date card once periods render so the nav arrows can match it.
+  useLayoutEffect(() => {
+    const head = wrapRef.current?.querySelector('.period-col-head');
+    if (head) setHeadH(head.getBoundingClientRect().height);
+  }, [periods, cols]);
+
   const nav = periods[0]?.nav;
+  const pageVars = { '--sticky-top': `${stickyTop}px` };
+  if (headH) pageVars['--head-h'] = `${headH}px`;
 
   return (
-    <div className="periods-page" ref={wrapRef} style={{ '--sticky-top': `${stickyTop}px` }}>
+    <div className="periods-page" ref={wrapRef} style={pageVars}>
       {error && <p className="form-error">{error}</p>}
       {!error && periods.length === 0 && <div className="page-loading">Loading…</div>}
       {periods.length > 0 && (
