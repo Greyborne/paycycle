@@ -892,3 +892,68 @@ textarea { font-family: ui-monospace, monospace; font-size: 0.85rem; resize: ver
   .onboarding-cat select:nth-child(4), .onboarding-cat input:nth-child(5) { grid-column: span 1; }
   .hero-figure { font-size: 2.2rem; }
 }
+
+/* ---------- dashboard widescreen / ultra-wide ---------- */
+
+@media (min-width: 1440px) {
+  .content:has(.dashboard) { max-width: 1600px; }
+  .dashboard {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 0.75rem;
+    align-items: start;
+    /* Default (no warning banner, no net-worth card): chart full width,
+       "This pay period" on the left alongside "Upcoming periods" on the
+       right, top-aligned. */
+    grid-template-areas:
+      "hero hero"
+      "chart chart"
+      "period up";
+  }
+  .dashboard > * { margin-bottom: 0; }
+  .dashboard > .hero { grid-area: hero; }
+  .dashboard > .warning-banner { grid-area: warn; }
+  .dashboard > .dash-chart { grid-area: chart; }
+  .dashboard > .networth { grid-area: net; }
+  .dashboard > .dash-period { grid-area: period; }
+  .dashboard > .dash-upcoming { grid-area: up; }
+
+  /* Warning banner present, no net-worth card: its own full-width row
+     above the chart. */
+  .dashboard:has(.warning-banner):not(:has(.networth)) {
+    grid-template-areas:
+      "hero hero"
+      "warn warn"
+      "chart chart"
+      "period up";
+  }
+  /* Net-worth card present (multi-account), no warning banner: it stacks
+     above "This pay period" in the left column, alongside "Upcoming
+     periods" on the right. */
+  .dashboard:has(.networth):not(:has(.warning-banner)) {
+    grid-template-areas:
+      "hero hero"
+      "chart chart"
+      "net up"
+      "period up";
+  }
+  /* Both present. */
+  .dashboard:has(.warning-banner):has(.networth) {
+    grid-template-areas:
+      "hero hero"
+      "warn warn"
+      "chart chart"
+      "net up"
+      "period up";
+  }
+}
+
+@media (min-width: 1920px) {
+  .content:has(.dashboard) { max-width: 2100px; }
+  .dashboard { gap: 1rem; }
+}
+
+@media (min-aspect-ratio: 21/9) and (min-width: 1440px) {
+  .content:has(.dashboard) { max-width: 2100px; }
+  .dashboard { gap: 1rem; }
+}

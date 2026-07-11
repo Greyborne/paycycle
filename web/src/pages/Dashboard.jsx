@@ -102,7 +102,7 @@ export default function Dashboard() {
         </section>
       )}
 
-      <section className="card">
+      <section className="card dash-chart">
         <div className="card-head">
           <h2>Estimated running balance</h2>
           <div className="range-picker" role="group" aria-label="Projection horizon">
@@ -125,7 +125,7 @@ export default function Dashboard() {
       </section>
 
       {cur && (
-        <section className="card">
+        <section className="card dash-period">
           <div className="card-head">
             <h2>This pay period · {fmtRange(cur.start, cur.end)}</h2>
             <Link className="btn btn-ghost" to="/period/current">Open period →</Link>
@@ -161,7 +161,7 @@ export default function Dashboard() {
         </section>
       )}
 
-      <section className="card">
+      <section className="card dash-upcoming">
         <h2>Upcoming periods</h2>
         <table className="table">
           <thead>
