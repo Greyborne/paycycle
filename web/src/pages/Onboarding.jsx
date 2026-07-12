@@ -91,11 +91,14 @@ export function cadenceBody(form) {
 }
 
 export default function Onboarding() {
-  const { user, refreshUser } = useAuth();
+  const { user, refreshUser, setUser } = useAuth();
   const navigate = useNavigate();
   const [step, setStep] = useState(0);
   const [error, setError] = useState(null);
   const [busy, setBusy] = useState(false);
+  const [confirmCancel, setConfirmCancel] = useState(false);
+  const [cancelling, setCancelling] = useState(false);
+  const [cancelError, setCancelError] = useState(null);
   const [form, setForm] = useState({
     cadence: 'biweekly', anchorDate: todayISO(), intervalDays: 10, day1: 1, day2: 15,
   });
@@ -116,6 +119,19 @@ export default function Onboarding() {
       navigate('/');
     } catch (err) {
       setJoinError(err.message);
+    }
+  };
+
+  const cancelSignup = async () => {
+    setCancelling(true);
+    setCancelError(null);
+    try {
+      await api('/auth/account', { method: 'DELETE' });
+      setUser(null);
+      navigate('/login');
+    } catch (err) {
+      setCancelError(err.message);
+      setCancelling(false);
     }
   };
 
@@ -274,6 +290,23 @@ export default function Onboarding() {
             </div>
           </>
         )}
+
+        <div className="onboarding-cancel">
+          {!confirmCancel ? (
+            <button className="btn btn-ghost" onClick={() => setConfirmCancel(true)}>
+              Cancel and return to sign in
+            </button>
+          ) : (
+            <div className="cancel-confirm" role="group" aria-label="Cancel sign-up">
+              <span className="muted small">Delete this new account and return to sign in? This can&apos;t be undone.</span>
+              <div>
+                <button className="btn btn-ghost" disabled={cancelling} onClick={() => setConfirmCancel(false)}>Keep setting up</button>
+                <button className="btn btn-primary" disabled={cancelling} onClick={cancelSignup}>Delete account</button>
+              </div>
+            </div>
+          )}
+          {cancelError && <p className="form-error" role="alert">{cancelError}</p>}
+        </div>
       </div>
     </div>
   );

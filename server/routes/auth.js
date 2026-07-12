@@ -131,6 +131,45 @@ router.post('/logout', (req, res) => {
   res.status(204).end();
 });
 
+// Cancel a brand-new sign-up: permanently deletes the caller's own
+// not-yet-onboarded account and household. Never accepts an id from the
+// client - operates only on req.userId. Refuses once onboarding is
+// complete, so this can't be used to nuke an established account.
+router.delete('/account', requireAuth, async (req, res, next) => {
+  const client = await pool.connect();
+  try {
+    const budget = await getMembership(req.userId);
+    if (!budget) return res.status(404).json({ error: 'No account found' });
+    if (budget.onboarding_complete) {
+      return res.status(409).json({ error: "Your account is already set up — it can't be cancelled here." });
+    }
+
+    await client.query('BEGIN');
+    // Lock the budget row so a concurrent /household/join can't slip a new
+    // member in between our count and the conditional delete below (that
+    // INSERT takes an FK KEY SHARE lock on this row, which conflicts with
+    // FOR UPDATE, so the two serialize instead of racing).
+    await client.query('SELECT id FROM budgets WHERE id = $1 FOR UPDATE', [budget.id]);
+    const { rows } = await client.query(
+      'SELECT count(*)::int AS n FROM budget_members WHERE budget_id = $1',
+      [budget.id]
+    );
+    if (rows[0].n === 1) {
+      await client.query('DELETE FROM budgets WHERE id = $1', [budget.id]);
+    }
+    await client.query('DELETE FROM users WHERE id = $1', [req.userId]);
+    await client.query('COMMIT');
+
+    clearSessionCookie(res);
+    res.status(204).end();
+  } catch (err) {
+    await client.query('ROLLBACK').catch(() => {});
+    next(err);
+  } finally {
+    client.release();
+  }
+});
+
 // Public config for the login page (no auth required).
 router.get('/config', (req, res) => {
   res.json({

@@ -345,6 +345,10 @@ input:focus, select:focus, textarea:focus, button:focus-visible, a:focus-visible
 .onboarding-cat input[type="checkbox"] { width: auto; }
 .onboarding-cat.excluded input:not([type="checkbox"]), .onboarding-cat.excluded select { opacity: 0.4; }
 
+.onboarding-cancel { margin-top: 1.25rem; border-top: 1px solid var(--grid); padding-top: 0.85rem; }
+.cancel-confirm { display: flex; align-items: center; justify-content: space-between; gap: 0.75rem; flex-wrap: wrap; }
+.cancel-confirm > div { display: flex; gap: 0.5rem; }
+
 input[type="checkbox"] { accent-color: var(--accent); }
 
 /* ---------- dashboard ---------- */
