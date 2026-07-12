@@ -249,14 +249,15 @@ export default function Onboarding() {
               {cats.map((c, i) => (
                 <div key={i} className={`onboarding-cat ${c.include ? '' : 'excluded'}`}>
                   <input type="checkbox" checked={c.include} onChange={(e) => setCat(i, { include: e.target.checked })} aria-label="Include" />
-                  <input type="text" value={c.name} onChange={(e) => setCat(i, { name: e.target.value })} placeholder="Name" />
-                  <select value={c.type} onChange={(e) => setCat(i, { type: e.target.value })}>
+                  <input type="text" value={c.name} onChange={(e) => setCat(i, { name: e.target.value })} placeholder="Name" aria-label="Category name" />
+                  <select value={c.type} onChange={(e) => setCat(i, { type: e.target.value })} aria-label="Type">
                     <option value="expense">Expense</option>
                     <option value="income">Income</option>
                   </select>
                   <select
                     value={c.recurrence}
                     onChange={(e) => setCat(i, { recurrence: e.target.value })}
+                    aria-label="Recurrence"
                   >
                     <option value="every_period">Every period</option>
                     <option value="monthly">Monthly</option>
@@ -265,6 +266,7 @@ export default function Onboarding() {
                     <input
                       type="number" min="1" max="31" value={c.dueDay || 1} title="Due day of month"
                       onChange={(e) => setCat(i, { dueDay: e.target.value })}
+                      aria-label="Due day of month"
                     />
                   ) : <span />}
                   <input
