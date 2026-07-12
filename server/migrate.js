@@ -12,7 +12,7 @@ export async function waitForDb(retries = 30, delayMs = 2000) {
       return;
     } catch (err) {
       if (i >= retries) throw new Error(`database not reachable: ${err.message}`);
-      console.log(`[paycycle] waiting for database (attempt ${i}/${retries})...`);
+      console.log(`[paycycle] waiting for database (attempt ${i}/${retries}): ${err.message}`);
       await new Promise((r) => setTimeout(r, delayMs));
     }
   }
