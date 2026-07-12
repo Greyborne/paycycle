@@ -181,6 +181,11 @@ on a Raspberry Pi):
 database connection are healthy, 503 otherwise. The Docker image ships with a
 `HEALTHCHECK` wired to it, so `docker ps` and orchestrators see readiness.
 
+## Troubleshooting
+
+Hitting a problem (login errors, "waiting for database", logged out on restart)?
+See [TROUBLESHOOTING.md](TROUBLESHOOTING.md).
+
 ## Backing up your data
 
 All persistent state lives in the `paycycle-db` named volume. To back up:
