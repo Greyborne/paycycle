@@ -1,13 +1,33 @@
 import crypto from 'node:crypto';
+import fs from 'node:fs';
 
 function bool(value, fallback) {
   if (value === undefined || value === '') return fallback;
   return !['0', 'false', 'no', 'off'].includes(String(value).toLowerCase());
 }
 
+// Reads a value from `${name}_FILE` (Docker/Compose secret file) first, then
+// falls back to the plain `${name}` env var. Lets a password contain any
+// character - including `$` - without going through shell/.env interpolation.
+function readSecret(name) {
+  const f = process.env[`${name}_FILE`];
+  if (f) return fs.readFileSync(f, 'utf8').replace(/\r?\n$/, '');
+  return process.env[name];
+}
+
 export const config = {
   port: parseInt(process.env.PORT || '8080', 10),
-  databaseUrl: process.env.DATABASE_URL || 'postgres://paycycle:paycycle@localhost:5432/paycycle',
+  // Back-compat: if DATABASE_URL is set, it wins outright (see server/db.js).
+  // Otherwise the discrete `db` fields below are used - no URL-encoding
+  // needed for special characters in the password.
+  databaseUrl: process.env.DATABASE_URL || '',
+  db: {
+    host: process.env.PGHOST || 'localhost',
+    port: parseInt(process.env.PGPORT || '5432', 10),
+    user: process.env.PGUSER || process.env.POSTGRES_USER || 'paycycle',
+    password: readSecret('PGPASSWORD') || readSecret('POSTGRES_PASSWORD') || 'paycycle',
+    database: process.env.PGDATABASE || process.env.POSTGRES_DB || 'paycycle',
+  },
   sessionSecret: process.env.SESSION_SECRET || '',
   allowRegistration: bool(process.env.ALLOW_REGISTRATION, true),
   defaultCurrency: (process.env.DEFAULT_CURRENCY || 'USD').toUpperCase(),

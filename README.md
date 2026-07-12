@@ -149,7 +149,8 @@ on a Raspberry Pi):
 
 | Variable | Default | Description |
 |---|---|---|
-| `DATABASE_URL` | `postgres://paycycle:paycycle@localhost:5432/paycycle` | Postgres connection string. The compose file wires this to the bundled `db` service. |
+| `DATABASE_URL` | *(empty)* | Optional full Postgres connection string; if set, it takes priority over the `PG*` vars below. |
+| `PGHOST` / `PGPORT` / `PGUSER` / `PGPASSWORD` / `PGDATABASE` | `localhost` / `5432` / `paycycle` / `paycycle` / `paycycle` | Discrete Postgres connection settings, used when `DATABASE_URL` is unset. The compose file wires these to the bundled `db` service. Because they're passed as separate fields (not a URL), a password containing `@ : / %` needs no encoding; `PGPASSWORD_FILE` (Docker secret) is also supported for passwords containing `$`. |
 | `SESSION_SECRET` | *(random per boot)* | **Set this.** Secret for signing session tokens. If unset, a temporary one is generated and all logins are invalidated on restart. |
 | `PORT` | `8080` | Port the app listens on inside the container. |
 | `ALLOW_REGISTRATION` | `true` | Set `false` to disable open sign-ups after creating your own account. Household invite codes still work, so family can always join. |
