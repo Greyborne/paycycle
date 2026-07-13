@@ -2,14 +2,27 @@ import crypto from 'node:crypto';
 import { Router } from 'express';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
+import rateLimit from 'express-rate-limit';
 import { pool, q } from '../db.js';
 import { config } from '../config.js';
 import { requireAuth, setSessionCookie, clearSessionCookie } from '../auth.js';
 import { bad } from '../validation.js';
 import { getMembership } from '../services/budget.js';
 import { oidcEnabled, discovery, exchangeCode, verifyIdToken } from '../services/oidc.js';
+import { sendMail, emailEnabled } from '../services/mailer.js';
 
 const router = Router();
+
+// Rate limit auth endpoints that accept credentials/tokens or trigger email,
+// to blunt brute-force and abuse. Not applied to /logout, /me, /config, or
+// the OIDC routes.
+const authLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 20,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Too many attempts, please try again later' },
+});
 
 // The client-facing user object flattens the household's settings so the
 // frontend reads currency/thresholds in one place, plus household identity.
@@ -77,7 +90,7 @@ async function provisionUser(client, { email, passwordHash, invite }) {
 // Register. With a valid inviteCode the new account joins that household
 // directly (skipping onboarding) and is allowed even when open registration
 // is disabled - so an admin can lock the server down but still invite family.
-router.post('/register', async (req, res, next) => {
+router.post('/register', authLimiter, async (req, res, next) => {
   const client = await pool.connect();
   try {
     const { email, password, inviteCode } = req.body || {};
@@ -112,7 +125,7 @@ router.post('/register', async (req, res, next) => {
   }
 });
 
-router.post('/login', async (req, res, next) => {
+router.post('/login', authLimiter, async (req, res, next) => {
   try {
     const { email, password } = req.body || {};
     const { rows } = await q('SELECT * FROM users WHERE lower(email) = lower($1)', [email || '']);
@@ -127,9 +140,11 @@ router.post('/login', async (req, res, next) => {
 });
 
 // Self-service password change. Operates only on req.userId (no IDOR);
-// requires the current password before writing a new hash; keeps the
-// session cookie intact so the caller stays signed in.
-router.post('/password', requireAuth, async (req, res, next) => {
+// requires the current password before writing a new hash; bumps
+// password_changed_at (invalidating every other outstanding session) and
+// immediately re-issues the session cookie so the caller making this
+// request stays signed in.
+router.post('/password', authLimiter, requireAuth, async (req, res, next) => {
   try {
     const { currentPassword, newPassword } = req.body || {};
     if (typeof newPassword !== 'string' || newPassword.length < 8) {
@@ -140,9 +155,103 @@ router.post('/password', requireAuth, async (req, res, next) => {
     const ok = await bcrypt.compare(currentPassword || '', rows[0].password_hash);
     if (!ok) return res.status(400).json({ error: 'Your current password is incorrect' });
     const hash = await bcrypt.hash(newPassword, 10);
-    await q('UPDATE users SET password_hash = $1 WHERE id = $2', [hash, req.userId]);
+    await q(
+      'UPDATE users SET password_hash = $1, password_changed_at = now() WHERE id = $2',
+      [hash, req.userId]
+    );
+    setSessionCookie(res, req.userId);
     res.status(204).end();
   } catch (err) { next(err); }
+});
+
+function resetBaseUrl(req) {
+  return config.appUrl || `${req.protocol}://${req.get('host')}`;
+}
+
+// Request an emailed reset link. Always responds 200 { ok: true } regardless
+// of whether the email exists or SMTP is configured, so the endpoint can't be
+// used to enumerate accounts. Never logs the token or the email address.
+router.post('/forgot', authLimiter, async (req, res, next) => {
+  try {
+    const { email } = req.body || {};
+    if (typeof email === 'string' && email.trim() && emailEnabled()) {
+      try {
+        const { rows } = await q('SELECT id FROM users WHERE lower(email) = lower($1)', [email.trim()]);
+        if (rows.length) {
+          const token = crypto.randomBytes(32).toString('hex');
+          const hash = crypto.createHash('sha256').update(token).digest('hex');
+          await q(
+            "INSERT INTO password_resets (user_id, token_hash, expires_at) VALUES ($1, $2, now() + interval '1 hour')",
+            [rows[0].id, hash]
+          );
+          const link = `${resetBaseUrl(req)}/reset?token=${token}`;
+          await sendMail({
+            to: email.trim(),
+            subject: 'Reset your PayCycle password',
+            text: `We received a request to reset your PayCycle password.\n\n` +
+              `Reset it here: ${link}\n\n` +
+              `This link expires in 1 hour. If you didn't request this, you can ignore this email.`,
+          });
+        }
+      } catch (err) {
+        console.error('[paycycle] password reset email failed:', err.message);
+      }
+    } else if (!emailEnabled()) {
+      console.warn('[paycycle] password reset requested but SMTP is not configured');
+    }
+    res.json({ ok: true });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// Complete a reset with the emailed token. Public — the token itself is the
+// credential. Single-use, 1-hour expiry, looked up by hash only.
+router.post('/reset', authLimiter, async (req, res, next) => {
+  try {
+    const { token, newPassword } = req.body || {};
+    if (typeof newPassword !== 'string' || newPassword.length < 8) {
+      bad('New password must be at least 8 characters');
+    }
+    if (typeof token !== 'string' || !token) {
+      bad('This reset link is invalid or has expired');
+    }
+    const hash = crypto.createHash('sha256').update(token).digest('hex');
+    const { rows } = await q(
+      `SELECT * FROM password_resets
+       WHERE token_hash = $1 AND used_at IS NULL AND expires_at > now()
+       ORDER BY created_at DESC LIMIT 1`,
+      [hash]
+    );
+    if (!rows.length) bad('This reset link is invalid or has expired');
+    const reset = rows[0];
+    const newHash = await bcrypt.hash(newPassword, 10);
+
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      await client.query(
+        'UPDATE users SET password_hash = $1, password_changed_at = now() WHERE id = $2',
+        [newHash, reset.user_id]
+      );
+      // Invalidate this token (and any other outstanding tokens for the
+      // same user) so a stale reset link can't be replayed.
+      await client.query(
+        'UPDATE password_resets SET used_at = now() WHERE user_id = $1 AND used_at IS NULL',
+        [reset.user_id]
+      );
+      await client.query('COMMIT');
+    } catch (err) {
+      await client.query('ROLLBACK').catch(() => {});
+      throw err;
+    } finally {
+      client.release();
+    }
+
+    res.json({ ok: true });
+  } catch (err) {
+    next(err);
+  }
 });
 
 router.post('/logout', (req, res) => {

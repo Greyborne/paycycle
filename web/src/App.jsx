@@ -6,6 +6,8 @@ import {
   MonitorIcon, MoonIcon, SignOutIcon, SlidersIcon, SunIcon, TagIcon,
 } from './icons.jsx';
 import Login from './pages/Login.jsx';
+import ForgotPassword from './pages/ForgotPassword.jsx';
+import ResetPassword from './pages/ResetPassword.jsx';
 import Onboarding from './pages/Onboarding.jsx';
 import Dashboard from './pages/Dashboard.jsx';
 import PeriodDetail from './pages/PeriodDetail.jsx';
@@ -245,6 +247,8 @@ export default function App() {
       {!user ? (
         <Routes>
           <Route path="/login" element={<Login />} />
+          <Route path="/forgot" element={<ForgotPassword />} />
+          <Route path="/reset" element={<ResetPassword />} />
           <Route path="*" element={<Navigate to="/login" replace />} />
         </Routes>
       ) : !user.onboardingComplete ? (

@@ -156,7 +156,7 @@ on a Raspberry Pi):
 | `ALLOW_REGISTRATION` | `true` | Set `false` to disable open sign-ups after creating your own account. Household invite codes still work, so family can always join. |
 | `DEFAULT_CURRENCY` | `USD` | Currency preselected during onboarding (any ISO 4217 code — each user picks their own). |
 | `SECURE_COOKIES` | `false` | Set `true` when serving over HTTPS (behind a reverse proxy). |
-| `TRUST_PROXY` | `false` | Set `true` when running behind a reverse proxy so client IPs resolve correctly. |
+| `TRUST_PROXY` | `false` | Set `true` when running behind a single reverse proxy so client IPs resolve correctly (trusts exactly one hop); behind more than one proxy, set this to the number of proxy hops instead, e.g. `TRUST_PROXY=2`. |
 | `TZ` | container default | Timezone used to decide "today" for pay-period boundaries. Set to your local zone, e.g. `America/New_York`. |
 | `APP_URL` | *(empty)* | Public URL of your instance, used for links inside notification emails, e.g. `https://paycycle.example.com`. |
 | `SMTP_HOST` | *(empty)* | SMTP server for emailed notifications. Leave empty to disable email entirely (in-app notifications always work). |
@@ -174,6 +174,8 @@ on a Raspberry Pi):
 | `OIDC_ISSUER_INTERNAL` | *(empty)* | Optional backchannel base URL when the public issuer isn't reachable from inside the container (e.g. `http://keycloak:8080/realms/main` on the same compose network). |
 | `POSTGRES_PASSWORD` | `paycycle` | (compose only) Password for the bundled Postgres container. |
 | `PAYCYCLE_PORT` | `8080` | (compose only) Host port the app is published on. |
+
+For detailed SMTP setup (password reset and email notifications), see [docs/EMAIL.md](docs/EMAIL.md).
 
 ## Health check
 

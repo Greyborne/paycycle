@@ -6,6 +6,21 @@ function bool(value, fallback) {
   return !['0', 'false', 'no', 'off'].includes(String(value).toLowerCase());
 }
 
+// Parses TRUST_PROXY into what `app.set('trust proxy', ...)` should actually
+// receive: a specific hop count (or `false`), never a bare `true`. A bare
+// `true` tells Express to trust the entire X-Forwarded-For chain, which lets
+// a client spoof its own "trusted" IP and bypass IP-based rate limiting.
+function trustProxyHops(value) {
+  if (value === undefined || value === '') return false;
+  const normalized = String(value).trim().toLowerCase();
+  if (['false', 'no', 'off', '0'].includes(normalized)) return false;
+  // A plain positive integer means "trust this many proxy hops".
+  if (/^[1-9][0-9]*$/.test(normalized)) return parseInt(normalized, 10);
+  // Anything else truthy ("true"/"yes"/"on"/etc.) means "one reverse proxy" -
+  // the safe default, rather than trusting the whole forwarded-for chain.
+  return 1;
+}
+
 // Reads a value from `${name}_FILE` (Docker/Compose secret file) first, then
 // falls back to the plain `${name}` env var. Lets a password contain any
 // character - including `$` - without going through shell/.env interpolation.
@@ -32,14 +47,14 @@ export const config = {
   allowRegistration: bool(process.env.ALLOW_REGISTRATION, true),
   defaultCurrency: (process.env.DEFAULT_CURRENCY || 'USD').toUpperCase(),
   secureCookies: bool(process.env.SECURE_COOKIES, false),
-  trustProxy: bool(process.env.TRUST_PROXY, false),
+  trustProxy: trustProxyHops(process.env.TRUST_PROXY),
   appUrl: (process.env.APP_URL || '').replace(/\/$/, ''),
   smtp: {
     host: process.env.SMTP_HOST || '',
     port: parseInt(process.env.SMTP_PORT || '587', 10),
     secure: bool(process.env.SMTP_SECURE, false),
     user: process.env.SMTP_USER || '',
-    pass: process.env.SMTP_PASS || '',
+    pass: readSecret('SMTP_PASS') || '',
     from: process.env.SMTP_FROM || 'PayCycle <paycycle@localhost>',
     intervalMinutes: parseInt(process.env.NOTIFICATION_EMAIL_INTERVAL_MINUTES || '60', 10),
   },

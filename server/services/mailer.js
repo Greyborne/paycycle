@@ -20,6 +20,13 @@ function getTransport() {
   return transport;
 }
 
+// One-off transactional send (e.g. password reset), independent of the
+// per-user notification digest below.
+export async function sendMail({ to, subject, text }) {
+  if (!emailEnabled()) throw new Error('email is not configured');
+  await getTransport().sendMail({ from: config.smtp.from, to, subject, text });
+}
+
 function fmtAmount(cents, currency) {
   if (cents === null || cents === undefined) return '';
   try {

@@ -93,6 +93,10 @@ Your browser cached the old files. Hard-refresh with `Ctrl`+`Shift`+`R` (or
 `Cmd`+`Shift`+`R`). Also confirm you actually pulled the new image
 (`docker compose pull`, then `docker compose up -d`).
 
+## Password reset emails not sending?
+
+Password reset links and email notifications require SMTP to be configured. See [docs/EMAIL.md](docs/EMAIL.md) for setup details.
+
 ## Still stuck?
 
 Grab the app logs (`docker compose logs --tail=100 app`) and open an issue at

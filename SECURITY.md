@@ -44,5 +44,8 @@ A few self-hosting reminders that prevent the most common issues:
   publish Postgres to the host; don't expose port 5432 publicly.
 - **Terminate TLS in front of the app** (e.g. a reverse proxy) and set
   `SECURE_COOKIES=true` / `TRUST_PROXY=true` when behind one.
+  `TRUST_PROXY=true` trusts exactly one proxy hop (the safe default for a
+  single reverse proxy); if requests pass through more than one proxy before
+  reaching the app, set `TRUST_PROXY=<number of proxies>` instead.
 - **Restrict registration** with `ALLOW_REGISTRATION=false` once your accounts
   exist, so a public instance can't be signed up to by strangers.

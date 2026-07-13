@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { useNavigate, useSearchParams } from 'react-router-dom';
+import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { api } from '../api.js';
 import { useAuth } from '../App.jsx';
 
@@ -58,6 +58,9 @@ export default function Login() {
               required minLength={mode === 'register' ? 8 : undefined}
             />
           </label>
+          {mode === 'login' && (
+            <p className="muted small"><Link to="/forgot">Forgot password?</Link></p>
+          )}
           {mode === 'register' && (
             <label>
               Household invite code <span className="muted">(optional)</span>
