@@ -24,6 +24,12 @@ export default function Settings() {
   const [changeCadence, setChangeCadence] = useState(false);
   const [message, setMessage] = useState(null);
   const [error, setError] = useState(null);
+  const [currentPassword, setCurrentPassword] = useState('');
+  const [newPassword, setNewPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
+  const [passwordError, setPasswordError] = useState(null);
+  const [passwordMessage, setPasswordMessage] = useState(null);
+  const [passwordSubmitting, setPasswordSubmitting] = useState(false);
 
   useEffect(() => {
     api('/settings').then(({ user, payPeriodConfig, emailEnabled: enabled }) => {
@@ -67,6 +73,28 @@ export default function Settings() {
       setChangeCadence(false);
     } catch (err) {
       setError(err.message);
+    }
+  };
+
+  const changePassword = async (e) => {
+    e.preventDefault();
+    setPasswordError(null);
+    setPasswordMessage(null);
+    if (newPassword !== confirmPassword) {
+      setPasswordError("New passwords don't match");
+      return;
+    }
+    setPasswordSubmitting(true);
+    try {
+      await api('/auth/password', { method: 'POST', body: { currentPassword, newPassword } });
+      setCurrentPassword('');
+      setNewPassword('');
+      setConfirmPassword('');
+      setPasswordMessage('Password changed.');
+    } catch (err) {
+      setPasswordError(err.message);
+    } finally {
+      setPasswordSubmitting(false);
     }
   };
 
@@ -182,6 +210,39 @@ export default function Settings() {
         {message && <p className="form-ok" role="status">{message}</p>}
         <button className="btn btn-primary">Save settings</button>
       </form>
+
+      <section className="card">
+        <h2>Password</h2>
+        <form onSubmit={changePassword}>
+          <div className="field-row">
+            <label>
+              Current password
+              <input
+                type="password" autoComplete="current-password"
+                value={currentPassword} onChange={(e) => setCurrentPassword(e.target.value)}
+              />
+            </label>
+            <label>
+              New password
+              <input
+                type="password" autoComplete="new-password"
+                value={newPassword} onChange={(e) => setNewPassword(e.target.value)}
+              />
+            </label>
+            <label>
+              Confirm new password
+              <input
+                type="password" autoComplete="new-password"
+                value={confirmPassword} onChange={(e) => setConfirmPassword(e.target.value)}
+              />
+            </label>
+          </div>
+          {passwordError && <p className="form-error" role="alert">{passwordError}</p>}
+          {passwordMessage && <p className="form-ok" role="status">{passwordMessage}</p>}
+          <button className="btn btn-primary" disabled={passwordSubmitting}>Change password</button>
+        </form>
+      </section>
+
       <AccountsCard />
       <HouseholdCard />
     </div>

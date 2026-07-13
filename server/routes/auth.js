@@ -126,6 +126,25 @@ router.post('/login', async (req, res, next) => {
   }
 });
 
+// Self-service password change. Operates only on req.userId (no IDOR);
+// requires the current password before writing a new hash; keeps the
+// session cookie intact so the caller stays signed in.
+router.post('/password', requireAuth, async (req, res, next) => {
+  try {
+    const { currentPassword, newPassword } = req.body || {};
+    if (typeof newPassword !== 'string' || newPassword.length < 8) {
+      bad('New password must be at least 8 characters');
+    }
+    const { rows } = await q('SELECT password_hash FROM users WHERE id = $1', [req.userId]);
+    if (!rows.length) return res.status(401).json({ error: 'Not signed in' });
+    const ok = await bcrypt.compare(currentPassword || '', rows[0].password_hash);
+    if (!ok) return res.status(400).json({ error: 'Your current password is incorrect' });
+    const hash = await bcrypt.hash(newPassword, 10);
+    await q('UPDATE users SET password_hash = $1 WHERE id = $2', [hash, req.userId]);
+    res.status(204).end();
+  } catch (err) { next(err); }
+});
+
 router.post('/logout', (req, res) => {
   clearSessionCookie(res);
   res.status(204).end();
