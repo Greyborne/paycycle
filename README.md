@@ -154,6 +154,7 @@ on a Raspberry Pi):
 | `SESSION_SECRET` | *(random per boot)* | **Set this.** Secret for signing session tokens. If unset, a temporary one is generated and all logins are invalidated on restart. |
 | `PORT` | `8080` | Port the app listens on inside the container. |
 | `ALLOW_REGISTRATION` | `true` | Set `false` to disable open sign-ups after creating your own account. Household invite codes still work, so family can always join. |
+| `ADMIN_EMAILS` | *(empty)* | Comma-separated emails granted admin access to the `/admin` user-management page. |
 | `DEFAULT_CURRENCY` | `USD` | Currency preselected during onboarding (any ISO 4217 code — each user picks their own). |
 | `SECURE_COOKIES` | `false` | Set `true` when serving over HTTPS (behind a reverse proxy). |
 | `TRUST_PROXY` | `false` | Set `true` when running behind a single reverse proxy so client IPs resolve correctly (trusts exactly one hop); behind more than one proxy, set this to the number of proxy hops instead, e.g. `TRUST_PROXY=2`. |

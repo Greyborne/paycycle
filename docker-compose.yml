@@ -17,6 +17,7 @@ services:
       PGDATABASE: paycycle
       SESSION_SECRET: ${SESSION_SECRET:-}
       ALLOW_REGISTRATION: ${ALLOW_REGISTRATION:-true}
+      ADMIN_EMAILS: ${ADMIN_EMAILS:-}
       DEFAULT_CURRENCY: ${DEFAULT_CURRENCY:-USD}
       TZ: ${TZ:-UTC}
       # Optional: emailed notifications (in-app notifications work without this)
