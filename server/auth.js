@@ -46,6 +46,23 @@ export async function requireAuth(req, res, next) {
   }
 }
 
+// Gate for the admin surface: runs after requireAuth. Admin status is never
+// trusted from the client - it's re-derived here from the caller's own row
+// against config.adminEmails on every request.
+export async function requireAdmin(req, res, next) {
+  try {
+    const { rows } = await q('SELECT email FROM users WHERE id = $1', [req.userId]);
+    const email = rows[0]?.email;
+    if (!email || !config.adminEmails.includes(String(email).toLowerCase())) {
+      return res.status(403).json({ error: 'Admin access required' });
+    }
+    req.userEmail = email;
+    next();
+  } catch (err) {
+    next(err);
+  }
+}
+
 // Resolve the caller's household: sets req.budget (budgets row) and
 // req.budgetRole. Mount after requireAuth on every budget-scoped route.
 export function attachBudget(getMembership) {

@@ -3,7 +3,7 @@ import { Link, Navigate, NavLink, Route, Routes, useLocation, useNavigate } from
 import { api } from './api.js';
 import {
   CalendarIcon, ChartIcon, CollapseIcon, GearIcon, HomeIcon, ImportIcon, ListIcon, MenuIcon,
-  MonitorIcon, MoonIcon, SignOutIcon, SlidersIcon, SunIcon, TagIcon,
+  MonitorIcon, MoonIcon, ShieldIcon, SignOutIcon, SlidersIcon, SunIcon, TagIcon,
 } from './icons.jsx';
 import Login from './pages/Login.jsx';
 import ForgotPassword from './pages/ForgotPassword.jsx';
@@ -17,6 +17,7 @@ import Import from './pages/Import.jsx';
 import Reports from './pages/Reports.jsx';
 import Transactions from './pages/Transactions.jsx';
 import Rules from './pages/Rules.jsx';
+import Admin from './pages/Admin.jsx';
 import NotificationsBell from './components/NotificationsBell.jsx';
 import { useAccounts } from './useAccounts.js';
 
@@ -70,6 +71,7 @@ const PAGE_TITLES = [
   ['/import', 'Import'],
   ['/reports', 'Reports'],
   ['/settings', 'Settings'],
+  ['/admin', 'Admin'],
 ];
 
 const NAV_SECTIONS = [
@@ -118,6 +120,13 @@ function Shell({ children }) {
 
   useEffect(() => { setNavOpen(false); }, [location]);
 
+  // The Admin section only shows up for the session's own account - admin
+  // status here is purely a UX shortcut; the server re-derives and enforces
+  // it independently on every /api/admin/* request.
+  const navSections = user.isAdmin
+    ? [...NAV_SECTIONS, ['Admin', [['/admin', 'Admin', ShieldIcon]]]]
+    : NAV_SECTIONS;
+
   const toggleCollapsed = () => {
     setCollapsed((c) => {
       localStorage.setItem('sidebarCollapsed', c ? '0' : '1');
@@ -149,7 +158,7 @@ function Shell({ children }) {
           </button>
         </div>
         <nav aria-label="Main">
-          {NAV_SECTIONS.map(([section, items]) => (
+          {navSections.map(([section, items]) => (
             <React.Fragment key={section}>
               <div className="nav-label">{section}</div>
               {items.map(([to, label, Glyph, extra]) => (
@@ -267,6 +276,7 @@ export default function App() {
             <Route path="/import" element={<Import />} />
             <Route path="/reports" element={<Reports />} />
             <Route path="/settings" element={<Settings />} />
+            <Route path="/admin" element={user.isAdmin ? <Admin /> : <Navigate to="/" replace />} />
             <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>
         </Shell>

@@ -45,6 +45,7 @@ export const config = {
   },
   sessionSecret: process.env.SESSION_SECRET || '',
   allowRegistration: bool(process.env.ALLOW_REGISTRATION, true),
+  adminEmails: (process.env.ADMIN_EMAILS || '').split(',').map((e) => e.trim().toLowerCase()).filter(Boolean),
   defaultCurrency: (process.env.DEFAULT_CURRENCY || 'USD').toUpperCase(),
   secureCookies: bool(process.env.SECURE_COOKIES, false),
   trustProxy: trustProxyHops(process.env.TRUST_PROXY),

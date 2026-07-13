@@ -69,6 +69,10 @@ export const MonitorIcon = () => (
   <Icon><rect x="3" y="4" width="18" height="13" rx="2" /><path d="M8 21h8M12 17v4" /></Icon>
 );
 
+export const ShieldIcon = () => (
+  <Icon><path d="M12 3 5 6v5c0 5 3 8 7 9 4-1 7-4 7-9V6l-7-3Z" /><path d="m9 12 2 2 4-4" /></Icon>
+);
+
 export const SignOutIcon = () => (
   <Icon><path d="M9 21H5a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h4" /><path d="m15 16 4-4-4-4" /><path d="M19 12H9" /></Icon>
 );

@@ -5,7 +5,7 @@ import cookieParser from 'cookie-parser';
 import { config } from './config.js';
 import { pool } from './db.js';
 import { waitForDb, migrate } from './migrate.js';
-import { requireAuth, attachBudget } from './auth.js';
+import { requireAuth, requireAdmin, attachBudget } from './auth.js';
 import { getMembership } from './services/budget.js';
 import { startEmailScheduler } from './services/mailer.js';
 import { HttpError } from './validation.js';
@@ -23,6 +23,7 @@ import accountRoutes from './routes/accounts.js';
 import notificationRoutes from './routes/notifications.js';
 import plaidRoutes from './routes/plaid.js';
 import ruleRoutes from './routes/rules.js';
+import adminRoutes from './routes/admin.js';
 
 const app = express();
 app.set('trust proxy', config.trustProxy);
@@ -54,6 +55,7 @@ app.use('/api/accounts', budgetScoped, accountRoutes);
 app.use('/api/notifications', budgetScoped, notificationRoutes);
 app.use('/api/plaid', budgetScoped, plaidRoutes);
 app.use('/api/rules', budgetScoped, ruleRoutes);
+app.use('/api/admin', requireAuth, requireAdmin, adminRoutes);
 
 app.use('/api', (req, res) => res.status(404).json({ error: 'Not found' }));
 

@@ -38,6 +38,7 @@ function publicUser(user, budget) {
     warningThresholdCents: budget.warning_threshold_cents,
     onboardingComplete: budget.onboarding_complete,
     household: { id: budget.id, name: budget.name, role: budget.role },
+    isAdmin: config.adminEmails.includes(String(user.email).toLowerCase()),
   };
 }
 
