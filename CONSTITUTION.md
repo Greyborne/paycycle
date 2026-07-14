@@ -53,6 +53,21 @@ task to task. Only the boss amends this file, in writing, in §8.
   walkthrough, not just an automated linter.
 - **No hidden-content tricks:** nothing may be shown to sighted users
   but hidden from assistive tech (or vice-versa) to satisfy a check.
+- **Contrast is measured per rendering context, never per token pair.**
+  Several tokens are semi-transparent (`--accent-soft`, `--border`), so
+  the effective background is whatever opaque ancestor they land on, and
+  one class can render over several. A ratio proven in one context proves
+  nothing about the others. Claiming a rule passes means: enumerate every
+  place it renders, trace each one's real opaque ancestor in the JSX,
+  alpha-composite the translucent layers, and clear 4.5:1 in the **worst**
+  case — in both themes. Any token whose value is shared across themes is
+  suspect: one value cannot serve two opposite background luminance
+  ranges.
+  *Why (2026-07-14):* `.btn-ghost.active` was cleared as passing on the
+  strength of its in-`.card` ratio, but Reports renders it on the bare
+  page, where the same tint composited over `--page` measured 4.2:1 — a
+  real AA failure that a per-token check could not see. Fixed by
+  darkening light `--accent-hi`; both contexts pass today.
 
 ## 3. Security (this app handles financial PII and is internet-facing)
 This is the most load-bearing section — it binds on **every** build,
