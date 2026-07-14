@@ -79,8 +79,8 @@ export default function Reports() {
 
   useEffect(() => { load(); }, [load]);
 
-  if (error) return <p className="form-error">{error}</p>;
-  if (!data) return <div className="page-loading">Loading…</div>;
+  if (error) return <div className="reports-page"><p className="form-error">{error}</p></div>;
+  if (!data) return <div className="reports-page"><div className="page-loading">Loading…</div></div>;
 
   const years = data.years.length ? data.years : [year];
   const defaultId = baseAccounts.find((a) => a.isDefault)?.id;

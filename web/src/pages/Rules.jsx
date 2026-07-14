@@ -199,7 +199,7 @@ export default function Rules() {
 
   useEffect(() => { load(); }, [load]);
 
-  if (!rules) return <div className="page-loading">Loading…</div>;
+  if (!rules) return <div className="rules-page"><div className="page-loading">Loading…</div></div>;
 
   const move = async (rule, dir) => {
     const ids = rules.map((r) => r.id);

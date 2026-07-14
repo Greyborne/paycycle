@@ -78,8 +78,8 @@ export default function Transactions() {
     });
   }, [txns, sort]);
 
-  if (error) return <p className="form-error">{error}</p>;
-  if (!sorted) return <div className="page-loading">Loading…</div>;
+  if (error) return <div className="transactions-page"><p className="form-error">{error}</p></div>;
+  if (!sorted) return <div className="transactions-page"><div className="page-loading">Loading…</div></div>;
 
   const clickSort = (key) => setSort((s) => ({ key, dir: s.key === key ? -s.dir : key === 'date' ? -1 : 1 }));
   const arrow = (key) => (sort.key === key ? (sort.dir > 0 ? ' ↑' : ' ↓') : '');

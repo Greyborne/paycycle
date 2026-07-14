@@ -30,8 +30,8 @@ export default function Dashboard() {
       .catch(() => {});
   }, []);
 
-  if (error) return <p className="form-error">{error}</p>;
-  if (!data) return <div className="page-loading">Loading…</div>;
+  if (error) return <div className="dashboard dashboard-placeholder"><p className="form-error">{error}</p></div>;
+  if (!data) return <div className="dashboard dashboard-placeholder"><div className="page-loading">Loading…</div></div>;
 
   const { currency, currentPeriod: cur, projection, firstNegative, firstBelowWarning } = data;
   const upcoming = projection.filter((e) => !e.materialized).slice(0, 8);
