@@ -922,6 +922,11 @@ textarea { font-family: ui-monospace, monospace; font-size: 0.85rem; resize: ver
   .dashboard > .dash-period { grid-area: period; }
   .dashboard > .dash-upcoming { grid-area: up; }
 
+  /* Loading/error placeholder: keep the same .content width as the loaded
+     dashboard (so there's no first-render reflow), but skip the two-column
+     grid layout since there's only a single placeholder child. */
+  .dashboard.dashboard-placeholder { display: block; }
+
   /* Warning banner present, no net-worth card: its own full-width row
      above the chart. */
   .dashboard:has(.warning-banner):not(:has(.networth)) {
