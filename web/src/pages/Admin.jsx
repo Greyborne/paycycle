@@ -28,6 +28,7 @@ export default function Admin() {
     setStage('confirm');
     setRowError(null);
     setMessage(null);
+    setActionError(null);
   };
 
   const cancelDelete = () => {
@@ -37,9 +38,27 @@ export default function Admin() {
     setBusy(false);
   };
 
+  const [resetBusyId, setResetBusyId] = useState(null);
+  const [actionError, setActionError] = useState(null);
+
+  const sendReset = async (user) => {
+    setResetBusyId(user.id);
+    setActionError(null);
+    setMessage(null);
+    try {
+      await api(`/admin/users/${user.id}/send-reset`, { method: 'POST' });
+      setMessage(`Reset email sent to ${user.email}.`);
+    } catch (err) {
+      setActionError(err.message);
+    } finally {
+      setResetBusyId(null);
+    }
+  };
+
   const runDelete = async (user, confirm) => {
     setBusy(true);
     setRowError(null);
+    setActionError(null);
     try {
       await api(`/admin/users/${user.id}`, { method: 'DELETE', body: { confirm: !!confirm } });
       setActiveId(null);
@@ -89,6 +108,16 @@ export default function Admin() {
                 <td className="num">{u.householdSize ?? <span className="muted">—</span>}</td>
                 <td>{fmtDate(String(u.createdAt).slice(0, 10))}</td>
                 <td className="center">
+                  <button
+                    type="button"
+                    className="btn btn-ghost btn-small"
+                    disabled={resetBusyId === u.id}
+                    onClick={() => sendReset(u)}
+                    aria-label={`Send reset email to ${u.email}`}
+                  >
+                    {resetBusyId === u.id ? 'Sending…' : 'Send reset email'}
+                  </button>
+                  {' '}
                   {u.isSelf || u.isAdmin ? (
                     <span className="muted">—</span>
                   ) : activeId !== u.id ? (
@@ -137,6 +166,7 @@ export default function Admin() {
           </tbody>
         </table>
         {message && <p className="form-ok" role="status">{message}</p>}
+        {actionError && <p className="form-error" role="alert">{actionError}</p>}
       </section>
     </div>
   );

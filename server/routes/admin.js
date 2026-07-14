@@ -1,6 +1,8 @@
 import { Router } from 'express';
 import { pool, q } from '../db.js';
 import { config } from '../config.js';
+import { emailEnabled } from '../services/mailer.js';
+import { createAndSendReset } from '../services/passwordReset.js';
 
 const router = Router();
 
@@ -116,7 +118,13 @@ router.delete('/users/:id', async (req, res, next) => {
       }
     }
 
-    await client.query('DELETE FROM users WHERE id = $1', [targetId]);
+    const { rowCount } = await client.query('DELETE FROM users WHERE id = $1', [targetId]);
+    if (rowCount === 0) {
+      // Concurrent double-delete: the target vanished between our lookup
+      // above and this DELETE. Don't write a phantom audit row.
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: 'User not found' });
+    }
 
     await logAdminAction(client, {
       actorId: req.userId,
@@ -134,6 +142,43 @@ router.delete('/users/:id', async (req, res, next) => {
     next(err);
   } finally {
     client.release();
+  }
+});
+
+// Admin-triggered password reset email. Reuses the same token/mailer
+// machinery as the self-service /auth/forgot flow. Unlike /forgot,
+// anti-enumeration doesn't apply here (the admin already sees the user
+// list), so this can surface a clear "SMTP not configured" error instead of
+// silently no-opping. The token itself is never returned to the caller.
+router.post('/users/:id/send-reset', async (req, res, next) => {
+  if (!/^[1-9][0-9]*$/.test(String(req.params.id))) {
+    return res.status(400).json({ error: 'Invalid user id' });
+  }
+  const targetId = parseInt(req.params.id, 10);
+  try {
+    const { rows: targetRows } = await q('SELECT id, email FROM users WHERE id = $1', [targetId]);
+    if (!targetRows.length) return res.status(404).json({ error: 'User not found' });
+    const target = targetRows[0];
+
+    if (!emailEnabled()) {
+      return res.status(400).json({
+        error: 'Email (SMTP) is not configured — see docs/EMAIL.md to enable password-reset emails.',
+      });
+    }
+
+    await createAndSendReset(req, { userId: target.id, email: target.email });
+
+    await logAdminAction(pool, {
+      actorId: req.userId,
+      actorEmail: req.userEmail,
+      action: 'send_reset',
+      targetId: target.id,
+      targetEmail: target.email,
+    });
+
+    res.json({ ok: true });
+  } catch (err) {
+    next(err);
   }
 });
 

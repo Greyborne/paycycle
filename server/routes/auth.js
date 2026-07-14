@@ -9,7 +9,8 @@ import { requireAuth, setSessionCookie, clearSessionCookie } from '../auth.js';
 import { bad } from '../validation.js';
 import { getMembership } from '../services/budget.js';
 import { oidcEnabled, discovery, exchangeCode, verifyIdToken } from '../services/oidc.js';
-import { sendMail, emailEnabled } from '../services/mailer.js';
+import { emailEnabled } from '../services/mailer.js';
+import { createAndSendReset } from '../services/passwordReset.js';
 
 const router = Router();
 
@@ -165,10 +166,6 @@ router.post('/password', authLimiter, requireAuth, async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
-function resetBaseUrl(req) {
-  return config.appUrl || `${req.protocol}://${req.get('host')}`;
-}
-
 // Request an emailed reset link. Always responds 200 { ok: true } regardless
 // of whether the email exists or SMTP is configured, so the endpoint can't be
 // used to enumerate accounts. Never logs the token or the email address.
@@ -179,20 +176,7 @@ router.post('/forgot', authLimiter, async (req, res, next) => {
       try {
         const { rows } = await q('SELECT id FROM users WHERE lower(email) = lower($1)', [email.trim()]);
         if (rows.length) {
-          const token = crypto.randomBytes(32).toString('hex');
-          const hash = crypto.createHash('sha256').update(token).digest('hex');
-          await q(
-            "INSERT INTO password_resets (user_id, token_hash, expires_at) VALUES ($1, $2, now() + interval '1 hour')",
-            [rows[0].id, hash]
-          );
-          const link = `${resetBaseUrl(req)}/reset?token=${token}`;
-          await sendMail({
-            to: email.trim(),
-            subject: 'Reset your PayCycle password',
-            text: `We received a request to reset your PayCycle password.\n\n` +
-              `Reset it here: ${link}\n\n` +
-              `This link expires in 1 hour. If you didn't request this, you can ignore this email.`,
-          });
+          await createAndSendReset(req, { userId: rows[0].id, email: email.trim() });
         }
       } catch (err) {
         console.error('[paycycle] password reset email failed:', err.message);
