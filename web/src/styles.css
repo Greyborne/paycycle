@@ -764,6 +764,9 @@ textarea { font-family: ui-monospace, monospace; font-size: 0.85rem; resize: ver
 .badge.txn-prov-auto { background: var(--accent-soft); color: var(--accent-hi); }
 .badge.txn-prov-manual { background: var(--health-none-bg); color: var(--health-none-ink); }
 .badge.txn-prov-uncat { background: var(--health-danger-bg); color: var(--health-danger-ink); }
+.badge.txn-prov-btn { border: none; cursor: pointer; font: inherit; }
+.badge.txn-prov-btn:hover { filter: brightness(1.15); text-decoration: underline; }
+.badge.txn-prov-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 
 .bulk-bar {
   display: flex;
@@ -967,4 +970,74 @@ textarea { font-family: ui-monospace, monospace; font-size: 0.85rem; resize: ver
 @media (min-aspect-ratio: 21/9) and (min-width: 1440px) {
   .content:has(.dashboard) { max-width: 2100px; }
   .dashboard { gap: 1rem; }
+}
+
+/* ---------- rule drawer (quick-rule from a Transactions "needs review" chip) ---------- */
+
+.rule-drawer-backdrop { align-items: stretch; justify-content: flex-end; padding: 0; }
+
+.rule-drawer {
+  background: var(--surface);
+  border-left: 1px solid var(--border-strong);
+  border-top-left-radius: var(--radius-card);
+  border-bottom-left-radius: var(--radius-card);
+  box-shadow: var(--shadow-pop);
+  width: 440px;
+  max-width: 100vw;
+  height: 100vh;
+  overflow-y: auto;
+  padding: 1.2rem 1.35rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.85rem;
+}
+.rule-drawer label { margin: 0.4rem 0; }
+.rule-drawer:focus-visible { outline: none; }
+
+.rule-drawer-head { display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; }
+.rule-drawer-head h2 { margin: 0; }
+.rule-drawer-close { padding: 0.15rem 0.5rem; font-size: 1.1rem; line-height: 1; }
+/* The heading takes initial focus on open (tabindex="-1", not covered by the
+   global input/select/textarea/button/a focus rule) — give it the same ring. */
+.rule-drawer h2:focus-visible, .rule-drawer h2:focus {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.rule-drawer-source {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 0.6rem 0.75rem;
+  margin: 0;
+}
+.rule-drawer-source dt {
+  font-size: 0.7rem;
+  font-weight: 650;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+  margin-top: 0.4rem;
+}
+.rule-drawer-source dt:first-child { margin-top: 0; }
+.rule-drawer-source dd { margin: 0 0 0.15rem; }
+
+.rule-drawer-more { border-top: 1px solid var(--grid); padding-top: 0.6rem; }
+.rule-drawer-more summary { cursor: pointer; font-weight: 550; }
+.rule-drawer-more label { display: block; }
+
+.rule-drawer-preview { border-top: 1px solid var(--grid); padding-top: 0.6rem; }
+.rule-drawer-sample { margin: 0.3rem 0 0; padding-left: 1.1rem; }
+
+.rule-drawer .modal-actions { margin-top: auto; padding-top: 0.6rem; }
+
+@media (max-width: 480px) {
+  .rule-drawer {
+    width: 100vw;
+    border-top-left-radius: 0;
+    border-bottom-left-radius: 0;
+  }
 }

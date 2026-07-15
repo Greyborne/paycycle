@@ -1,10 +1,11 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { api } from '../api.js';
 import { useAuth } from '../App.jsx';
 import { fmtDate, fmtMoney } from '../format.js';
 import { useAccounts } from '../useAccounts.js';
 import DriftNotices from '../components/DriftNotices.jsx';
+import RuleDrawer from '../components/RuleDrawer.jsx';
 
 function CategorySelect({ value, categories, onChange, disabled, ariaLabel }) {
   const group = (type, categoryType) => categories
@@ -48,6 +49,9 @@ export default function Transactions() {
   const [drift, setDrift] = useState([]);
   const [notice, setNotice] = useState(null);
   const [error, setError] = useState(null);
+  const [ruleDrawerTxn, setRuleDrawerTxn] = useState(null);
+  const triggerRefs = useRef(new Map());
+  const noticeRef = useRef(null);
 
   const load = useCallback(async () => {
     setError(null);
@@ -101,6 +105,35 @@ export default function Transactions() {
     load();
   };
 
+  // Returns focus to the "needs review" chip that opened the drawer, if it's
+  // still there (still uncategorized). If the row was just recategorized, the
+  // chip is gone — fall back to the notice that reports what happened.
+  const returnFocus = (id) => {
+    const node = triggerRefs.current.get(id);
+    if (node && node.isConnected) node.focus();
+    else noticeRef.current?.focus();
+  };
+
+  const closeRuleDrawer = () => {
+    const id = ruleDrawerTxn?.id;
+    // Nothing about the transaction changes on a plain close (Escape/backdrop/
+    // Cancel), so the trigger chip is guaranteed to still be there — focus it
+    // BEFORE unmounting the drawer. That way the drawer's focused descendant
+    // is no longer document.activeElement by the time React removes it, so
+    // there's no moment where the browser auto-shifts focus to <body> that a
+    // deferred (rAF-based) refocus would have to race against.
+    returnFocus(id);
+    setRuleDrawerTxn(null);
+  };
+
+  const applyRuleDrawer = async (noticeText) => {
+    const id = ruleDrawerTxn?.id;
+    setRuleDrawerTxn(null);
+    setNotice(noticeText);
+    await load();
+    requestAnimationFrame(() => requestAnimationFrame(() => returnFocus(id)));
+  };
+
   const rerunRules = async () => {
     setNotice(null);
     const res = await api('/transactions/recategorize', { method: 'POST' });
@@ -133,7 +166,7 @@ export default function Transactions() {
       </div>
 
       <DriftNotices notices={drift} onChanged={load} />
-      {notice && <p className="form-ok">{notice}</p>}
+      {notice && <p className="form-ok" ref={noticeRef} tabIndex={-1}>{notice}</p>}
 
       <section className="card">
         <div className="report-controls">
@@ -234,7 +267,24 @@ export default function Transactions() {
                         </Link>
                       )}
                     </td>
-                    <td><span className={`badge txn-prov-${provClass}`}>{provLabel}</span></td>
+                    <td>
+                      {provClass === 'uncat' ? (
+                        <button
+                          type="button"
+                          className="badge txn-prov-uncat txn-prov-btn"
+                          ref={(el) => {
+                            if (el) triggerRefs.current.set(t.id, el);
+                            else triggerRefs.current.delete(t.id);
+                          }}
+                          aria-label={`Create a categorization rule from "${t.description || 'this transaction'}"`}
+                          onClick={() => setRuleDrawerTxn(t)}
+                        >
+                          {provLabel}
+                        </button>
+                      ) : (
+                        <span className={`badge txn-prov-${provClass}`}>{provLabel}</span>
+                      )}
+                    </td>
                   </tr>
                 );
               })}
@@ -246,6 +296,17 @@ export default function Transactions() {
           Assigning a recurring category clears that period's line item; tags just label one-off spending.
         </p>
       </section>
+
+      {ruleDrawerTxn && (
+        <RuleDrawer
+          key={ruleDrawerTxn.id}
+          txn={ruleDrawerTxn}
+          categories={categories}
+          currency={ruleDrawerTxn.account_currency || user.currency}
+          onClose={closeRuleDrawer}
+          onApplied={applyRuleDrawer}
+        />
+      )}
     </div>
   );
 }
