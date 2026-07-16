@@ -212,8 +212,38 @@ takes the worker's self-report as true.
   stays where it is at narrow widths** (before the chart), so the narrow
   layout and keyboard/reading order are unchanged. Permitted because the
   card is a non-interactive summary with no focusable children and the
-  reorder relative to one neighbor is not misleading. Boss-approved. This
-  is the only sanctioned instance to date.
+  reorder relative to one neighbor is not misleading. Boss-approved.
+
+- **2026-07-16 — Add-account cadence controls, focus on unmount.** In
+  `web/src/components/AccountsCard.jsx`, the Add-account form's "Pay
+  cadence" select and its conditional "Days per period" input can be
+  unmounted while focus is inside them — when the currency becomes
+  foreign (hiding the whole cadence block), or when the cadence switches
+  away from `custom` (hiding the days input). In those cases focus falls
+  to `<body>` rather than moving to a sensible neighbour. **Permitted, no
+  guard shipped**, because every reproduction requires a *programmatic*
+  value change while focus sits in the block: a real user cannot change
+  the currency field or the select's value without first focusing that
+  control, which moves focus out of the block on its own. An a11y-checker
+  confirmed the normal typing and keyboard paths behave correctly.
+
+  This was not a cheap call and the reasoning should survive: four
+  successive guard attempts each fixed one synthetic variant and exposed
+  another. One of them placed a hook below the component's
+  `if (!accounts) return null;` early return, causing React error #310 —
+  a **blank Settings page for every user on every load**, which
+  `npm run build` compiled cleanly and only a rendered check caught. The
+  final attempt "worked" only by relying on React skipping a synthetic
+  blur during unmount — correctness by accident. The guard was reverted
+  in full. Boss ruling: an unreachable focus nit does not justify five
+  refs, two handlers and an effect whose correctness rests on
+  undocumented framework behaviour, in a component whose crash blanks a
+  whole page.
+
+  **Revisit if** the currency field ever becomes a `<select>`,
+  autocomplete, or anything else that can change value programmatically
+  or without taking focus — that would make these paths genuinely
+  reachable and the guard genuinely necessary.
 
 ## 8. Sign-off & amendment
 This constitution is the standard until the boss explicitly revises it

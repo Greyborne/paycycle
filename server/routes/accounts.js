@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { pool, q } from '../db.js';
-import { bad, requireCents, requireCurrency, requireDate } from '../validation.js';
+import { bad, parseCadenceConfig, requireCents, requireCurrency, requireDate } from '../validation.js';
 import { accountBalances, getConfig, getDefaultAccountId } from '../services/budget.js';
 import { periodContaining, todayISO } from '../services/schedule.js';
 
@@ -65,44 +65,99 @@ router.get('/', async (req, res, next) => {
 });
 
 router.post('/', async (req, res, next) => {
+  const client = await pool.connect();
   try {
     const { name, type } = req.body || {};
     if (typeof name !== 'string' || !name.trim()) bad('name is required');
     if (type !== undefined && !TYPES.includes(type)) bad(`type must be one of ${TYPES.join(', ')}`);
     const starting = requireCents(req.body.startingBalanceCents ?? 0, 'startingBalanceCents');
     const currency = normalizeCurrency(req.body.currency, req.budget);
-    const { rows: maxOrder } = await q(
+    const startedOn = await resolveStartedOn(req.budget, req.body.startedOn);
+
+    // Base-currency accounts budget on the pay-period cadence and need their
+    // own config row (migration 013). Foreign-currency (tracked) accounts
+    // never budget, so they get none - any requested cadence for one is
+    // silently ignored.
+    //
+    // Validate the cadence choice BEFORE writing anything: parseCadenceConfig
+    // can throw (e.g. bad intervalDays), and that must leave zero rows behind
+    // rather than an orphaned, unconfigured account.
+    let explicitCfg = null;
+    if (currency === null && req.body.cadence !== undefined) {
+      // User picked this account's own cadence rather than inheriting the
+      // default account's. Derivation rules (anchor = this account's
+      // tracking-from date, `startedOn`):
+      //   weekly/biweekly -> anchorDate = startedOn
+      //   custom          -> anchorDate = startedOn, intervalDays from body
+      //   monthly         -> day1 = day-of-month of startedOn
+      //   semimonthly     -> day1 = 1, day2 = 15 (common default; refine
+      //                      later in Settings -> Pay schedule)
+      // Built as a plain cadence body and run through the same
+      // parseCadenceConfig validation used elsewhere, so invalid input
+      // (e.g. missing/out-of-range intervalDays for custom) is rejected
+      // consistently.
+      const cadence = req.body.cadence;
+      const cadenceBody = { cadence };
+      if (cadence === 'weekly' || cadence === 'biweekly') {
+        cadenceBody.anchorDate = startedOn;
+      } else if (cadence === 'custom') {
+        cadenceBody.anchorDate = startedOn;
+        cadenceBody.intervalDays = req.body.intervalDays;
+      } else if (cadence === 'monthly') {
+        cadenceBody.day1 = Number(startedOn.slice(8, 10));
+      } else if (cadence === 'semimonthly') {
+        cadenceBody.day1 = 1;
+        cadenceBody.day2 = 15;
+      }
+      explicitCfg = parseCadenceConfig(cadenceBody);
+    }
+
+    await client.query('BEGIN');
+    const { rows: maxOrder } = await client.query(
       'SELECT COALESCE(MAX(sort_order), -1) + 1 AS next FROM accounts WHERE budget_id = $1',
       [req.budget.id]
     );
-    const startedOn = await resolveStartedOn(req.budget, req.body.startedOn);
-    const { rows: inserted } = await q(
+    const { rows: inserted } = await client.query(
       `INSERT INTO accounts (budget_id, name, type, starting_balance_cents, sort_order, currency, institution, number_mask, started_on)
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING id`,
       [req.budget.id, name.trim(), type || 'checking', starting, maxOrder[0].next, currency,
        normalizeText(req.body.institution), normalizeMask(req.body.numberMask), startedOn]
     );
-    // Base-currency accounts budget on the pay-period cadence and need their
-    // own config row (migration 013). New account inherits the household's
-    // default account's cadence rather than starting unconfigured.
-    // Foreign-currency (tracked) accounts never budget, so they get none.
+
     if (currency === null) {
-      const defaultAccountId = await getDefaultAccountId(req.budget.id);
-      const defaultCfg = await getConfig(req.budget.id, defaultAccountId);
-      if (defaultCfg) {
-        await q(
+      if (explicitCfg) {
+        await client.query(
           `INSERT INTO pay_period_configs (budget_id, account_id, cadence, anchor_date, day_1, day_2, interval_days)
            VALUES ($1, $2, $3, $4, $5, $6, $7)
            ON CONFLICT (account_id) DO NOTHING`,
-          [req.budget.id, inserted[0].id, defaultCfg.cadence, defaultCfg.anchor_date,
-           defaultCfg.day_1, defaultCfg.day_2, defaultCfg.interval_days]
+          [req.budget.id, inserted[0].id, explicitCfg.cadence, explicitCfg.anchor_date,
+           explicitCfg.day_1, explicitCfg.day_2, explicitCfg.interval_days]
         );
+      } else {
+        // No cadence chosen: keep legacy behaviour and inherit the
+        // household's default account's cadence rather than starting
+        // unconfigured.
+        const defaultAccountId = await getDefaultAccountId(req.budget.id);
+        const defaultCfg = await getConfig(req.budget.id, defaultAccountId);
+        if (defaultCfg) {
+          await client.query(
+            `INSERT INTO pay_period_configs (budget_id, account_id, cadence, anchor_date, day_1, day_2, interval_days)
+             VALUES ($1, $2, $3, $4, $5, $6, $7)
+             ON CONFLICT (account_id) DO NOTHING`,
+            [req.budget.id, inserted[0].id, defaultCfg.cadence, defaultCfg.anchor_date,
+             defaultCfg.day_1, defaultCfg.day_2, defaultCfg.interval_days]
+          );
+        }
       }
     }
+    await client.query('COMMIT');
     const rows = await accountBalances(req.budget.id);
     res.status(201).json({ accounts: rows.map(publicAccount) });
   } catch (err) {
+    await client.query('ROLLBACK').catch(() => {});
     next(err);
+  } finally {
+    client.release();
   }
 });
 
