@@ -3,6 +3,7 @@ import { config } from '../config.js';
 import { pool, q } from '../db.js';
 import {
   getConfig, ensureMaterialized, loadTemplates, driftFor, clearLineItemForTransaction, setAmountGoingForward,
+  getDefaultAccountId,
 } from './budget.js';
 import { decryptSecret, encryptSecret, isEncrypted } from './secrets.js';
 import { loadRules, firstMatchingCategory } from './rules.js';
@@ -51,13 +52,24 @@ export async function encryptLegacyTokens() {
   return n;
 }
 
+// Resolve (and cache on ctx) the pay-period config for a template's own
+// account, since a template's account may run a different cadence than the
+// household's default account whose cfg was loaded for the whole sync.
+async function cfgForTemplate(ctx, template) {
+  const acctId = template.account_id ?? ctx.defaultAccountId;
+  if (!ctx.cfgByAccount.has(acctId)) {
+    ctx.cfgByAccount.set(acctId, await getConfig(ctx.budget.id, acctId));
+  }
+  return ctx.cfgByAccount.get(acctId) || ctx.cfg;
+}
+
 async function insertSyncedTxn(clientDb, ctx, link, plaidTxn, userId, results) {
   const { budget } = ctx;
   const t = toTxn(plaidTxn);
   if (t.amountCents === 0) return;
   const { rows: period } = await clientDb.query(
-    'SELECT id, closed_at FROM pay_periods WHERE budget_id = $1 AND start_date <= $2 AND end_date >= $2 ORDER BY start_date DESC LIMIT 1',
-    [budget.id, t.date]
+    'SELECT id, closed_at FROM pay_periods WHERE budget_id = $1 AND account_id = $3 AND start_date <= $2 AND end_date >= $2 ORDER BY start_date DESC LIMIT 1',
+    [budget.id, t.date, link.account_id]
   );
   if (!period.length) {
     results.skipped += 1; // before the household's first period, or future-dated
@@ -110,7 +122,8 @@ async function insertSyncedTxn(clientDb, ctx, link, plaidTxn, userId, results) {
     // A material difference from plan auto-updates the recurring amount going
     // forward, exactly like a confirmed CSV import.
     if (drift && ctx.cfg) {
-      await setAmountGoingForward(clientDb, budget.id, ctx.cfg, template.id, t.amountCents, t.date);
+      const templateCfg = await cfgForTemplate(ctx, template);
+      await setAmountGoingForward(clientDb, budget.id, templateCfg, template.id, t.amountCents, t.date);
       results.drift.push(drift);
       results.replanned += 1;
     }
@@ -127,9 +140,12 @@ export async function syncBudget(budget, userId) {
   const { rows: items } = await q('SELECT * FROM plaid_items WHERE budget_id = $1', [budget.id]);
   const results = { added: 0, duplicates: 0, updated: 0, removed: 0, skipped: 0, cleared: 0, moved: 0, inClosed: 0, notReady: 0, replanned: 0, drift: [] };
   const { rows: accountRows } = await q('SELECT * FROM accounts WHERE budget_id = $1', [budget.id]);
+  const defaultAccountId = await getDefaultAccountId(budget.id);
   const ctx = {
     budget,
     cfg,
+    defaultAccountId,
+    cfgByAccount: new Map([[defaultAccountId, cfg]]),
     rules: await loadRules(budget.id),
     templatesById: new Map((await loadTemplates(budget.id, { includeArchived: true })).map((t) => [t.id, t])),
     accountsById: new Map(accountRows.map((a) => [a.id, a])),
@@ -175,8 +191,8 @@ export async function syncBudget(budget, userId) {
           if (!link) continue;
           const t = toTxn(txn);
           const { rows: period } = await clientDb.query(
-            'SELECT id FROM pay_periods WHERE budget_id = $1 AND start_date <= $2 AND end_date >= $2 ORDER BY start_date DESC LIMIT 1',
-            [budget.id, t.date]
+            'SELECT id FROM pay_periods WHERE budget_id = $1 AND account_id = $3 AND start_date <= $2 AND end_date >= $2 ORDER BY start_date DESC LIMIT 1',
+            [budget.id, t.date, link.account_id]
           );
           if (!period.length) continue;
           const { rowCount } = await clientDb.query(

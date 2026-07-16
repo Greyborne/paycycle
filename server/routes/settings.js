@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { q } from '../db.js';
 import { bad, parseCadenceConfig, requireCents, requireCurrency } from '../validation.js';
-import { getBudget, getConfig, getUser } from '../services/budget.js';
+import { getBudget, getConfig, getDefaultAccountId, getUser } from '../services/budget.js';
 import { emailEnabled } from '../services/mailer.js';
 import { publicUser } from './auth.js';
 
@@ -65,12 +65,16 @@ router.put('/', async (req, res, next) => {
 
     // Cadence is editable post-onboarding: existing real periods are kept
     // as-is and the new schedule applies from the next period forward.
+    // Per-account cadence editing is Phase 4; this screen still edits one
+    // cadence household-wide, so it is scoped to the default account's
+    // config row only (migration 013 - one row per account).
     if (body.cadence !== undefined) {
       const cfg = parseCadenceConfig(body);
+      const defaultAccountId = await getDefaultAccountId(budget.id);
       await q(
         `UPDATE pay_period_configs SET cadence = $1, anchor_date = $2, day_1 = $3, day_2 = $4,
-           interval_days = $5, updated_at = now() WHERE budget_id = $6`,
-        [cfg.cadence, cfg.anchor_date, cfg.day_1, cfg.day_2, cfg.interval_days, budget.id]
+           interval_days = $5, updated_at = now() WHERE account_id = $6`,
+        [cfg.cadence, cfg.anchor_date, cfg.day_1, cfg.day_2, cfg.interval_days, defaultAccountId]
       );
     }
 

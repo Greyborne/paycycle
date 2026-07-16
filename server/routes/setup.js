@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { pool } from '../db.js';
 import { bad, parseCadenceConfig, requireCents, requireCurrency, requireDate } from '../validation.js';
-import { ensureMaterialized, getConfig } from '../services/budget.js';
+import { ensureMaterialized, getDefaultAccountId } from '../services/budget.js';
 import { periodContaining, todayISO } from '../services/schedule.js';
 
 const router = Router();
@@ -37,12 +37,16 @@ router.post('/', async (req, res, next) => {
     }
 
     await client.query('BEGIN');
+    // At onboarding exactly one account exists (the budget's default); the
+    // config belongs to that account (migration 013 - pay_period_configs is
+    // keyed per-account now).
+    const defaultAccountId = await getDefaultAccountId(req.budget.id);
     await client.query(
-      `INSERT INTO pay_period_configs (budget_id, cadence, anchor_date, day_1, day_2, interval_days)
-       VALUES ($1, $2, $3, $4, $5, $6)
-       ON CONFLICT (budget_id) DO UPDATE SET cadence = $2, anchor_date = $3, day_1 = $4, day_2 = $5,
-         interval_days = $6, updated_at = now()`,
-      [req.budget.id, cfg.cadence, cfg.anchor_date, cfg.day_1, cfg.day_2, cfg.interval_days]
+      `INSERT INTO pay_period_configs (budget_id, account_id, cadence, anchor_date, day_1, day_2, interval_days)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)
+       ON CONFLICT (account_id) DO UPDATE SET cadence = $3, anchor_date = $4, day_1 = $5, day_2 = $6,
+         interval_days = $7, updated_at = now()`,
+      [req.budget.id, defaultAccountId, cfg.cadence, cfg.anchor_date, cfg.day_1, cfg.day_2, cfg.interval_days]
     );
     await client.query(
       'UPDATE budgets SET currency = $1, onboarding_complete = TRUE WHERE id = $2',
@@ -74,7 +78,7 @@ router.post('/', async (req, res, next) => {
     }
     await client.query('COMMIT');
 
-    await ensureMaterialized(req.budget.id, await getConfig(req.budget.id));
+    await ensureMaterialized(req.budget.id);
     res.status(201).json({ ok: true });
   } catch (err) {
     await client.query('ROLLBACK').catch(() => {});

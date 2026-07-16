@@ -31,10 +31,13 @@ function withNav(cfg, detail) {
 // future once every recorded period is closed).
 router.get('/current', async (req, res, next) => {
   try {
-    const { budget, cfg } = await loadContext(req);
-    await ensureMaterialized(budget.id, cfg);
-    const lifecycle = await getLifecycle(budget.id, cfg);
+    const { budget } = await loadContext(req);
+    await ensureMaterialized(budget.id);
     const accountId = await resolveAccountId(budget.id, req.query.account);
+    // The account's own cadence/config, not the household-default bridge -
+    // nav boundaries and lifecycle must reflect this account's schedule.
+    const cfg = await getConfig(budget.id, accountId);
+    const lifecycle = await getLifecycle(budget.id, cfg, accountId);
     const detail = await getPeriodDetail(budget, cfg, lifecycle.currentStart, accountId);
     res.json({ ...withNav(cfg, detail), accountId });
   } catch (err) {
@@ -45,10 +48,12 @@ router.get('/current', async (req, res, next) => {
 // A specific period by start date (materialized -> editable; future -> projected).
 router.get('/:start', async (req, res, next) => {
   try {
-    const { budget, cfg } = await loadContext(req);
+    const { budget } = await loadContext(req);
     const start = requireDate(req.params.start, 'start');
-    await ensureMaterialized(budget.id, cfg);
+    await ensureMaterialized(budget.id);
     const accountId = await resolveAccountId(budget.id, req.query.account);
+    // The account's own cadence/config, not the household-default bridge.
+    const cfg = await getConfig(budget.id, accountId);
     const detail = await getPeriodDetail(budget, cfg, start, accountId);
     if (!detail) return res.status(404).json({ error: 'No such pay period' });
     res.json({ ...withNav(cfg, detail), accountId });
@@ -71,12 +76,12 @@ async function unclearedItems(periodId) {
   return rows;
 }
 
-async function requireCurrentPeriod(budget, cfg, start) {
-  const lifecycle = await getLifecycle(budget.id, cfg);
+async function requireCurrentPeriod(budget, cfg, start, accountId) {
+  const lifecycle = await getLifecycle(budget.id, cfg, accountId);
   if (start !== lifecycle.currentStart) bad('Only the current pay period can be closed');
   const { rows } = await q(
-    'SELECT * FROM pay_periods WHERE budget_id = $1 AND start_date = $2',
-    [budget.id, start]
+    'SELECT * FROM pay_periods WHERE budget_id = $1 AND start_date = $2 AND account_id = $3',
+    [budget.id, start, accountId]
   );
   if (!rows.length) bad('The current period is not recorded yet');
   if (rows[0].closed_at) bad('This period is already closed');
@@ -85,12 +90,14 @@ async function requireCurrentPeriod(budget, cfg, start) {
 
 router.get('/:start/close-preview', async (req, res, next) => {
   try {
-    const { budget, cfg } = await loadContext(req);
+    const { budget } = await loadContext(req);
     const start = requireDate(req.params.start, 'start');
-    await ensureMaterialized(budget.id, cfg);
-    const periodRow = await requireCurrentPeriod(budget, cfg, start);
+    const accountId = await resolveAccountId(budget.id, req.query.account);
+    const cfg = await getConfig(budget.id, accountId);
+    await ensureMaterialized(budget.id);
+    const periodRow = await requireCurrentPeriod(budget, cfg, start, accountId);
     const uncleared = await unclearedItems(periodRow.id);
-    const projection = await buildProjection(budget, cfg, { months: 12 });
+    const projection = await buildProjection(budget, cfg, { months: 12, accountId });
     const entry = projection.entries.find((e) => e.start === start);
     const unclearedNet = uncleared.reduce(
       (sum, i) => sum + (i.type === 'income' ? i.planned_amount_cents : -i.planned_amount_cents), 0
@@ -116,10 +123,12 @@ router.get('/:start/close-preview', async (req, res, next) => {
 // snapshot and the next period becomes current.
 router.post('/:start/close', async (req, res, next) => {
   try {
-    const { budget, cfg } = await loadContext(req);
+    const { budget } = await loadContext(req);
     const start = requireDate(req.params.start, 'start');
-    await ensureMaterialized(budget.id, cfg);
-    const periodRow = await requireCurrentPeriod(budget, cfg, start);
+    const accountId = await resolveAccountId(budget.id, req.query.account);
+    const cfg = await getConfig(budget.id, accountId);
+    await ensureMaterialized(budget.id);
+    const periodRow = await requireCurrentPeriod(budget, cfg, start, accountId);
     const body = req.body || {};
     const resolutions = body.resolutions || {};
 
@@ -131,7 +140,7 @@ router.post('/:start/close', async (req, res, next) => {
     }
 
     // The carry target (and the next current period) must exist as a row.
-    const nextRow = await materializePeriodAfter(budget.id, cfg, {
+    const nextRow = await materializePeriodAfter(budget.id, accountId, cfg, {
       start: periodRow.start_date, end: periodRow.end_date,
     });
 
@@ -190,7 +199,7 @@ router.post('/:start/close', async (req, res, next) => {
 
     // With every planned item resolved, any remaining est-vs-cleared gap is
     // drift inherited from history. It needs an explicit decision.
-    let projection = await buildProjection(budget, cfg, { months: 12 });
+    let projection = await buildProjection(budget, cfg, { months: 12, accountId });
     let entry = projection.entries.find((e) => e.start === start);
     const discrepancy = (entry?.estBalance ?? 0) - (entry?.clearedBalance ?? 0);
     if (discrepancy !== 0) {
@@ -221,14 +230,14 @@ router.post('/:start/close', async (req, res, next) => {
            ON CONFLICT (pay_period_id, category_template_id)
            DO UPDATE SET planned_amount_cents = line_items.planned_amount_cents + EXCLUDED.planned_amount_cents
            RETURNING id`,
-          [periodRow.id, templateId, Math.abs(discrepancy), await resolveAccountId(budget.id, null)]
+          [periodRow.id, templateId, Math.abs(discrepancy), accountId]
         );
         resolutionLog.push({ action: 'adjust', itemId: adj[0].id });
       }
     }
 
     const snapshot = {
-      ...await clearedBalancesForPeriod(budget, cfg, start),
+      ...await clearedBalancesForPeriod(budget, cfg, start, accountId),
       resolutions: resolutionLog,
     };
     await q(
@@ -245,15 +254,17 @@ router.post('/:start/close', async (req, res, next) => {
 // everything after it reverts to projected behavior.
 router.post('/:start/reopen', async (req, res, next) => {
   try {
-    const { budget, cfg } = await loadContext(req);
+    const { budget } = await loadContext(req);
     const start = requireDate(req.params.start, 'start');
-    const lifecycle = await getLifecycle(budget.id, cfg);
+    const accountId = await resolveAccountId(budget.id, req.query.account);
+    const cfg = await getConfig(budget.id, accountId);
+    const lifecycle = await getLifecycle(budget.id, cfg, accountId);
     if (!lifecycle.latestClosedStart || start !== lifecycle.latestClosedStart) {
       bad('Only the most recently closed period can be reopened');
     }
     const { rows: periodRow } = await q(
-      'SELECT * FROM pay_periods WHERE budget_id = $1 AND start_date = $2',
-      [budget.id, start]
+      'SELECT * FROM pay_periods WHERE budget_id = $1 AND start_date = $2 AND account_id = $3',
+      [budget.id, start, accountId]
     );
     // Undo what close-out did: carried items come back (and out of the next
     // period), removed items come back, the close-out adjustment line goes
@@ -281,8 +292,8 @@ router.post('/:start/reopen', async (req, res, next) => {
       }
     }
     await q(
-      'UPDATE pay_periods SET closed_at = NULL, closed_snapshot = NULL WHERE budget_id = $1 AND start_date = $2',
-      [budget.id, start]
+      'UPDATE pay_periods SET closed_at = NULL, closed_snapshot = NULL WHERE budget_id = $1 AND start_date = $2 AND account_id = $3',
+      [budget.id, start, accountId]
     );
     res.json({ ok: true, restored: log.filter((e) => e.action !== 'clear').length });
   } catch (err) {
@@ -327,7 +338,10 @@ router.patch('/line-items/:id', async (req, res, next) => {
     // this period and roll it through every open period + the projection.
     // Otherwise only this one period's frozen snapshot changes.
     if (body.scope === 'forward' && body.plannedAmountCents !== undefined) {
-      const cfg = await getConfig(req.budget.id);
+      // Roll forward on the item's OWN account's cadence, not the household
+      // default's — periods are per-account (migration 013), so which
+      // periods "on or after this date" means depends on whose schedule.
+      const cfg = await getConfig(req.budget.id, accountId);
       const client = await pool.connect();
       try {
         await client.query('BEGIN');
@@ -365,7 +379,7 @@ router.patch('/line-items/:id', async (req, res, next) => {
 // only here; 'forward' also updates the recurring amount going forward.
 router.post('/:start/line-items', async (req, res, next) => {
   try {
-    const { budget, cfg } = await loadContext(req);
+    const { budget } = await loadContext(req);
     const start = requireDate(req.params.start, 'start');
     const body = req.body || {};
     const categoryTemplateId = Number(body.categoryTemplateId);
@@ -377,14 +391,14 @@ router.post('/:start/line-items', async (req, res, next) => {
       [categoryTemplateId, budget.id]
     );
     if (!tmpl.length) bad('Unknown category');
+    const accountId = tmpl[0].account_id ?? await getDefaultAccountId(budget.id);
     const { rows: period } = await q(
-      'SELECT id, start_date, closed_at FROM pay_periods WHERE budget_id = $1 AND start_date = $2',
-      [budget.id, start]
+      'SELECT id, start_date, closed_at FROM pay_periods WHERE budget_id = $1 AND account_id = $3 AND start_date = $2',
+      [budget.id, start, accountId]
     );
     if (!period.length) bad('That pay period is not recorded yet — you can only add items to current or past periods');
     if (period[0].closed_at) bad('This pay period is closed — reopen it to make changes');
 
-    const accountId = tmpl[0].account_id ?? await getDefaultAccountId(budget.id);
     const cleared = Boolean(body.cleared);
     const clearedDate = cleared ? todayISO() : null;
 
@@ -396,6 +410,9 @@ router.post('/:start/line-items', async (req, res, next) => {
     const params = [period[0].id, categoryTemplateId, planned, accountId, cleared, clearedDate];
 
     if (body.scope === 'forward') {
+      // Roll forward on the template's OWN account's cadence, not the
+      // household default's (periods are per-account, migration 013).
+      const cfg = await getConfig(budget.id, accountId);
       const client = await pool.connect();
       try {
         await client.query('BEGIN');

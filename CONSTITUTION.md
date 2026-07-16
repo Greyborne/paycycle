@@ -156,6 +156,10 @@ something folded silently into a feature or layout build.
   - Areas outside a change's stated scope stay behavior- and
     pixel-identical (e.g. a responsive change below its threshold must be
     impossible to notice).
+  - No financial data is silently lost or altered: a household's total
+    cleared position (summed across its accounts) is preserved across any
+    schema/data migration unless the brief explicitly and correctly
+    changes it.
 - **Honesty beats padding:** a result that is correct but smaller/simpler
   than expected (e.g. "these sections stay stacked because pairing them
   would cramp") is an acceptable PASS. Never pad, invent, or fill space
@@ -187,6 +191,19 @@ takes the worker's self-report as true.
   task are a FAIL.
 - **Links/routes** → actually re-resolve internal routes and external
   URLs.
+- **Data migration / integrity** → for any task that alters schema or
+  moves/rewrites existing rows, run the migration against a **restored
+  copy of representative data on an isolated ephemeral DB** (never the
+  shared dev DB), and prove, with queries the checker runs itself:
+  (a) **conservation** — no financial row (line item, transaction) is
+  lost, duplicated, or silently re-signed; pre/post counts and summed
+  cents reconcile per account and per period; (b) **correct
+  attribution** — rows land on the account/period the spec says;
+  (c) **idempotency** — re-running the migration is a no-op, not a
+  double-apply; (d) **reversibility or a documented one-way decision** —
+  either a down path is verified, or the brief states in writing why the
+  change is irreversible and how a bad run is recovered. A migration is
+  never PASSed on a dry-run alone.
 
 ## 7. Logged accessibility exceptions (§2 sanctioned-exception rule)
 - **2026-07-11 — Dashboard "Net Worth" card.** At ≥1440px the dashboard
@@ -203,3 +220,9 @@ This constitution is the standard until the boss explicitly revises it
 here, dated. A checker's FAIL is not overridden by a worker's — or the
 boss's — say-so: disputes are resolved by re-reading this file and ruling
 explicitly, in writing, before continuing.
+
+- **2026-07-15 — Account-first pay periods.** Added §6 "Data migration /
+  integrity" check and the §5 no-silent-financial-loss invariant ahead of
+  the account-first periods build (`docs/plans/account-first-periods.md`),
+  whose Phase 1 re-platforms `pay_periods`/`pay_period_configs` onto a
+  per-account model and migrates existing rows. Boss-approved.

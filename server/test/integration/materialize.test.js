@@ -12,12 +12,13 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { pool, q } from '../../db.js';
-import { createSoloBudget, ensureMaterialized, getConfig } from '../../services/budget.js';
+import { createSoloBudget, ensureMaterialized, getConfig, getDefaultAccountId } from '../../services/budget.js';
 import { addDays, monthlyOccurrences, parseISO, periodContaining, todayISO } from '../../services/schedule.js';
 
 // Seed a fresh biweekly household whose tracking starts `daysAgo` days before
 // today, then materialize periods up through today. Returns the budget id and
-// its config.
+// its (default account's) config. Configs are per-account (migration 013),
+// so the config row is inserted against the budget's default account.
 async function seedBudget({ daysAgo }) {
   const email = `mat-test-${Date.now()}-${Math.random().toString(36).slice(2, 8)}@example.test`;
   const { rows: user } = await q(
@@ -25,19 +26,20 @@ async function seedBudget({ daysAgo }) {
     [email]
   );
   const budget = await createSoloBudget(user[0].id);
+  const accountId = await getDefaultAccountId(budget.id);
   // Anchor the schedule on today so a period boundary lands there; backdate
   // the default account so materialization reaches back `daysAgo` days.
   await q(
-    "INSERT INTO pay_period_configs (budget_id, cadence, anchor_date) VALUES ($1, 'biweekly', $2)",
-    [budget.id, todayISO()]
+    "INSERT INTO pay_period_configs (budget_id, account_id, cadence, anchor_date) VALUES ($1, $2, 'biweekly', $3)",
+    [budget.id, accountId, todayISO()]
   );
   await q(
     'UPDATE accounts SET started_on = $1 WHERE budget_id = $2',
     [addDays(todayISO(), -daysAgo), budget.id]
   );
-  const cfg = await getConfig(budget.id);
-  await ensureMaterialized(budget.id, cfg);
-  return { budgetId: budget.id, cfg, userId: user[0].id };
+  const cfg = await getConfig(budget.id, accountId);
+  await ensureMaterialized(budget.id);
+  return { budgetId: budget.id, accountId, cfg, userId: user[0].id };
 }
 
 async function cleanup(budgetId, userId) {
@@ -71,7 +73,7 @@ test('a monthly category added after materialization lands in the open period co
     'INSERT INTO category_amount_history (category_template_id, amount_cents, effective_start_date) VALUES ($1, 44000, $2)',
     [cat[0].id, addDays(todayISO(), -28)]
   );
-  await ensureMaterialized(budgetId, cfg);
+  await ensureMaterialized(budgetId);
 
   // Contract: the $440 item appears in exactly the open periods whose date
   // range contains an occurrence of the due day — no more, no fewer. Before
@@ -124,7 +126,7 @@ test('a closed period is never back-filled by a later category', async (t) => {
     'INSERT INTO category_amount_history (category_template_id, amount_cents, effective_start_date) VALUES ($1, 12300, $2)',
     [cat[0].id, addDays(todayISO(), -28)]
   );
-  await ensureMaterialized(budgetId, cfg);
+  await ensureMaterialized(budgetId);
 
   const { rows: item } = await q(
     `SELECT 1 FROM line_items li
@@ -133,6 +135,69 @@ test('a closed period is never back-filled by a later category', async (t) => {
     [cat[0].id, targetPeriod.start]
   );
   assert.equal(item.length, 0, 'a frozen (closed) period must not gain new line items');
+});
+
+test('two accounts on the same budget with different cadences each get their own independent period rows', async (t) => {
+  // A biweekly default account (seeded as usual) plus a second, monthly
+  // account with its own anchor. Each account must materialize its own
+  // pay_periods rows (migration 013: UNIQUE(account_id, start_date)), and
+  // the two schedules must not bleed into each other.
+  const { budgetId, accountId: biweeklyAccountId, userId } = await seedBudget({ daysAgo: 40 });
+  t.after(() => cleanup(budgetId, userId));
+
+  const { rows: acct2 } = await q(
+    "INSERT INTO accounts (budget_id, name, started_on) VALUES ($1, 'Second account', $2) RETURNING id",
+    [budgetId, addDays(todayISO(), -40)]
+  );
+  const monthlyAccountId = acct2[0].id;
+  await q(
+    "INSERT INTO pay_period_configs (budget_id, account_id, cadence, day_1) VALUES ($1, $2, 'monthly', 1)",
+    [budgetId, monthlyAccountId]
+  );
+
+  await ensureMaterialized(budgetId);
+
+  const { rows: biweeklyPeriods } = await q(
+    'SELECT start_date, end_date FROM pay_periods WHERE account_id = $1 ORDER BY start_date',
+    [biweeklyAccountId]
+  );
+  const { rows: monthlyPeriods } = await q(
+    'SELECT start_date, end_date FROM pay_periods WHERE account_id = $1 ORDER BY start_date',
+    [monthlyAccountId]
+  );
+
+  assert.ok(biweeklyPeriods.length > 0, 'the biweekly account must have materialized periods');
+  assert.ok(monthlyPeriods.length > 0, 'the monthly account must have materialized periods');
+
+  // Independent row ownership: fetching by account_id must not return the
+  // other account's rows - each id set below only ever came from its own
+  // account_id filter, so this is really asserting no cross-contamination
+  // happened in ensureMaterialized's per-account loop.
+  const { rows: allPeriods } = await q(
+    'SELECT account_id, start_date FROM pay_periods WHERE budget_id = $1',
+    [budgetId]
+  );
+  assert.equal(
+    allPeriods.length,
+    biweeklyPeriods.length + monthlyPeriods.length,
+    'every period row for this budget belongs to exactly one of the two accounts'
+  );
+
+  // The cadences are genuinely different: a biweekly period is 14 days long,
+  // a monthly period spans a calendar month - so their end dates diverge.
+  const sampleBiweekly = biweeklyPeriods[0];
+  const sampleMonthly = monthlyPeriods[0];
+  const biweeklyLenDays = Math.round(
+    (Date.parse(sampleBiweekly.end_date) - Date.parse(sampleBiweekly.start_date)) / 86400000
+  );
+  const monthlyLenDays = Math.round(
+    (Date.parse(sampleMonthly.end_date) - Date.parse(sampleMonthly.start_date)) / 86400000
+  );
+  assert.notEqual(biweeklyLenDays, monthlyLenDays, 'the two accounts must materialize on genuinely different cadences');
+
+  // Independence: the row counts differ (monthly cadence over the same
+  // 40-day window produces fewer, longer periods than biweekly).
+  assert.notEqual(biweeklyPeriods.length, monthlyPeriods.length);
 });
 
 test.after(() => pool.end());

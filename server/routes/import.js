@@ -96,6 +96,13 @@ router.post('/commit', async (req, res, next) => {
 
     const templates = await loadTemplates(req.budget.id, { includeArchived: true });
     const templateById = new Map(templates.map((t) => [t.id, t]));
+    const defaultAccountId = await getDefaultAccountId(req.budget.id);
+    const cfgByAccount = new Map([[defaultAccountId, cfg]]);
+    async function cfgForTemplate(template) {
+      const acctId = template.account_id ?? defaultAccountId;
+      if (!cfgByAccount.has(acctId)) cfgByAccount.set(acctId, await getConfig(req.budget.id, acctId));
+      return cfgByAccount.get(acctId) || cfg;
+    }
 
     const results = {
       imported: 0, duplicates: 0, skipped: 0, linked: 0, moved: 0, autoCategorized: 0, needReview: 0,
@@ -113,8 +120,8 @@ router.post('/commit', async (req, res, next) => {
         : (r.amountCents < 0 ? 'expense' : (r.type === 'expense' ? 'expense' : 'income'));
 
       const { rows: period } = await client.query(
-        'SELECT id, closed_at FROM pay_periods WHERE budget_id = $1 AND start_date <= $2 AND end_date >= $2 ORDER BY start_date DESC LIMIT 1',
-        [req.budget.id, r.date]
+        'SELECT id, closed_at FROM pay_periods WHERE budget_id = $1 AND account_id = $3 AND start_date <= $2 AND end_date >= $2 ORDER BY start_date DESC LIMIT 1',
+        [req.budget.id, r.date, account.id]
       );
       if (!period.length || period[0].closed_at) {
         // Future dates, pre-history, or a closed (frozen) period.
@@ -156,7 +163,8 @@ router.post('/commit', async (req, res, next) => {
         // A material difference from plan auto-updates the recurring amount
         // going forward (when updating planned amounts is enabled).
         if (drift && updatePlanned) {
-          await setAmountGoingForward(client, req.budget.id, cfg, template.id, amount, r.date);
+          const templateCfg = await cfgForTemplate(template);
+          await setAmountGoingForward(client, req.budget.id, templateCfg, template.id, amount, r.date);
           results.drift.push(drift);
           results.replanned += 1;
         }

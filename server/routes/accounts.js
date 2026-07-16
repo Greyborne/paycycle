@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { pool, q } from '../db.js';
 import { bad, requireCents, requireCurrency, requireDate } from '../validation.js';
-import { accountBalances, getConfig } from '../services/budget.js';
+import { accountBalances, getConfig, getDefaultAccountId } from '../services/budget.js';
 import { periodContaining, todayISO } from '../services/schedule.js';
 
 const router = Router();
@@ -76,12 +76,29 @@ router.post('/', async (req, res, next) => {
       [req.budget.id]
     );
     const startedOn = await resolveStartedOn(req.budget, req.body.startedOn);
-    await q(
+    const { rows: inserted } = await q(
       `INSERT INTO accounts (budget_id, name, type, starting_balance_cents, sort_order, currency, institution, number_mask, started_on)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING id`,
       [req.budget.id, name.trim(), type || 'checking', starting, maxOrder[0].next, currency,
        normalizeText(req.body.institution), normalizeMask(req.body.numberMask), startedOn]
     );
+    // Base-currency accounts budget on the pay-period cadence and need their
+    // own config row (migration 013). New account inherits the household's
+    // default account's cadence rather than starting unconfigured.
+    // Foreign-currency (tracked) accounts never budget, so they get none.
+    if (currency === null) {
+      const defaultAccountId = await getDefaultAccountId(req.budget.id);
+      const defaultCfg = await getConfig(req.budget.id, defaultAccountId);
+      if (defaultCfg) {
+        await q(
+          `INSERT INTO pay_period_configs (budget_id, account_id, cadence, anchor_date, day_1, day_2, interval_days)
+           VALUES ($1, $2, $3, $4, $5, $6, $7)
+           ON CONFLICT (account_id) DO NOTHING`,
+          [req.budget.id, inserted[0].id, defaultCfg.cadence, defaultCfg.anchor_date,
+           defaultCfg.day_1, defaultCfg.day_2, defaultCfg.interval_days]
+        );
+      }
+    }
     const rows = await accountBalances(req.budget.id);
     res.status(201).json({ accounts: rows.map(publicAccount) });
   } catch (err) {
