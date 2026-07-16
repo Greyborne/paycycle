@@ -1,9 +1,91 @@
 # Plan: account-first pay periods
 
-**Status:** approved for build, not yet started
+**Status:** COMPLETE — all phases built and independently verified
+(branch `account-first-periods`; 2026-07-15/16)
 **Author:** boss session, 2026-07-15
 **Problem:** Closing a pay period closes it for every bank account at once.
 There is no way to close a period on one account while leaving another open.
+
+## Outcome
+
+Delivered. A pay period can now be closed for one bank account while another
+stays open, each account runs on its own cadence, and both are drivable from
+the UI. Every slice was built by a worker and independently re-verified by a
+checker on isolated ephemeral databases.
+
+| Phase | Scope | Commit |
+|-------|-------|--------|
+| 1a–3  | Migration 013, engine core, close/reopen, period locks | `ec9cd34` |
+| 4 s1  | Per-account close/reopen UI + labeling + modal focus    | `96fa4f3` |
+| 4b    | Per-account pay schedules in Settings                   | `2d05093` |
+| 5     | Roll-up decisions + correctness cleanup                 | (this)   |
+
+**Phase 5 was a correctness cleanup, not a build.** Two of its three planned
+pieces already existed: the Net worth card already summed base-currency
+accounts *including* credit (and since charging a card is recorded as an
+expense that drives its balance negative, it already nets debt against
+assets), and per-account warnings already shipped in `notifications.js`. What
+Phase 5 actually fixed was damage phases 1a–1b had done:
+
+- **Wrong-cadence projections.** `dashboard.js`, `notifications.js`, and
+  `reports.js /summary` all passed the *default* account's cfg to a
+  *per-account* `buildProjection`. Materialized periods were fine (they come
+  from DB rows); the **future** projection was computed on the wrong cadence,
+  quietly undermining phase 4b. Each now uses `getConfig(budgetId, accountId)`.
+- **Garbled CSV export.** `/export/periods.csv` ran unscoped, emitting one row
+  per account per period with interleaved running balances. Now per-account
+  with a leading `account` column and per-account balance chains; `?account=`
+  exports one.
+- **Broken period-end nudge.** Used whichever account's projection ran last,
+  counted uncleared items across all accounts, and collided notification keys.
+  Now per-account throughout; the unscoped fallback is gone.
+- **CSV formula injection (CWE-1236).** Putting account names into an export
+  surfaced it: `csvEscape` didn't neutralize a leading `=`/`+`/`-`/`@`. Fixed
+  in the shared helper, which also closed the **pre-existing** hole in
+  `transactions.csv` (descriptions, category names). Negative amounts are
+  excluded from neutralization via a plain-number test so exports stay numeric.
+- **Notification links.** Were `/period/<start>` with no account, so a
+  "Savings projected to go negative" alert opened whichever account was last
+  selected. Links now carry `?account=`, and `PeriodDetail` honours it from
+  the URL (switching the selected account to match).
+
+### Decisions locked with the user during the build
+
+1. **Fully independent per-account lifecycles**, not per-account close state
+   inside shared periods.
+2. **Different cadence per account** — this is what made the account the
+   primary period entity and demoted "household" to a roll-up.
+3. **Net worth: all accounts, assets minus liabilities**, credit as negative —
+   satisfied by the existing natural math (no special-casing; a card you owe on
+   is entered with a negative starting balance). No liability sign convention
+   was added, so nothing reinterprets existing data.
+4. **Foreign-currency accounts excluded** from the net-worth figure and listed
+   separately — the app has no FX rate source and `accounts.js` states amounts
+   never convert. A literal "all accounts" number would need a whole new
+   capability (rate API, caching, staleness).
+5. **Warnings per-account**, matching the code's own rationale: a healthy
+   household total can hide an overdraft in one account.
+6. **Settings lists every account's schedule** (single-account households keep
+   the simpler UI — no added chrome for the common case).
+
+### Known follow-ups (none blocking)
+
+- `POST /:start/reopen` isn't wrapped in a transaction the way `close` is — a
+  mid-sequence crash could leave a period partially reopened.
+- No test covers the `scope=forward` path; a `$1`-placeholder bug shipped
+  through it and was caught only by a live checker run.
+- Unbounded integer ids from route params across ~7 route files (500 instead
+  of 400 on malformed ids). `settings.js` has the reference guard.
+- Pre-existing axe violations in the Settings "Bank accounts" table.
+- `/summary`'s `realPeriods` overlap detection is still unscoped across
+  accounts — latent until two accounts' materialized periods overlap in date.
+- Migration 013 left empty period/config rows for foreign-currency accounts.
+- `setAmountGoingForward`'s template SELECT has no defence-in-depth
+  `budget_id` filter (safe today; both callers validate ownership first).
+
+---
+
+## Original plan (as approved)
 
 ---
 

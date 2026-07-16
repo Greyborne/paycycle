@@ -47,12 +47,15 @@ export async function computeNotifications(budget, cfg) {
 
   // 2. Projection threshold crossings within 12 months, per base-currency
   // account: a healthy household total can hide an overdraft in one account,
-  // so each account's own projection is checked.
+  // so each account's own projection is checked. Each account carries its own
+  // cadence config (migration 013) - using the household/default cfg for
+  // every account would walk another account's future periods on the wrong
+  // schedule, so each account's own config is fetched here.
   const baseAccounts = (await getAccounts(budget.id)).filter((a) => !a.currency && !a.archived);
-  let projection = null; // any per-account run also carries the shared period entries
   for (const account of baseAccounts) {
-    const acctProjection = await buildProjection(budget, cfg, { months: 12, accountId: account.id });
-    projection = acctProjection;
+    const acctCfg = await getConfig(budget.id, account.id);
+    if (!acctCfg) continue;
+    const acctProjection = await buildProjection(budget, acctCfg, { months: 12, accountId: account.id });
     if (acctProjection.firstNegative) {
       out.push({
         key: `negative:${account.id}:${acctProjection.firstNegative.start}`,
@@ -60,7 +63,7 @@ export async function computeNotifications(budget, cfg) {
         title: `${account.name} projected to go negative`,
         amountCents: acctProjection.firstNegative.estBalance,
         date: acctProjection.firstNegative.start,
-        link: `/period/${acctProjection.firstNegative.start}`,
+        link: `/period/${acctProjection.firstNegative.start}?account=${account.id}`,
       });
     } else if (acctProjection.firstBelowWarning) {
       out.push({
@@ -69,30 +72,34 @@ export async function computeNotifications(budget, cfg) {
         title: `${account.name} projected below your warning threshold`,
         amountCents: acctProjection.firstBelowWarning.estBalance,
         date: acctProjection.firstBelowWarning.start,
-        link: `/period/${acctProjection.firstBelowWarning.start}`,
+        link: `/period/${acctProjection.firstBelowWarning.start}?account=${account.id}`,
       });
     }
-  }
-  if (!projection) projection = await buildProjection(budget, cfg, { months: 12 });
 
-  // 3. Current period ends soon with uncleared items.
-  const current = projection.entries[projection.currentIndex];
-  if (current?.materialized && daysBetween(today, current.end) <= PERIOD_END_NUDGE_DAYS) {
-    const { rows } = await q(
-      `SELECT COUNT(*)::int AS n FROM line_items li
-       JOIN pay_periods pp ON pp.id = li.pay_period_id
-       WHERE pp.budget_id = $1 AND pp.start_date = $2 AND NOT li.cleared AND li.planned_amount_cents <> 0`,
-      [budget.id, current.start]
-    );
-    if (rows[0].n > 0) {
-      out.push({
-        key: `uncleared:${current.start}`,
-        severity: 'info',
-        title: `${rows[0].n} item${rows[0].n === 1 ? '' : 's'} not cleared — period ends soon`,
-        amountCents: null,
-        date: current.end,
-        link: '/period/current',
-      });
+    // 3. This account's current period ends soon with uncleared items.
+    // Periods are per-account rows (migration 013), so both the "current"
+    // entry and the uncleared-item count must be scoped to this account -
+    // an unscoped projection/query would interleave every account's periods
+    // and could double-count or pick an arbitrary account's current period.
+    const current = acctProjection.entries[acctProjection.currentIndex];
+    if (current?.materialized && daysBetween(today, current.end) <= PERIOD_END_NUDGE_DAYS) {
+      const { rows } = await q(
+        `SELECT COUNT(*)::int AS n FROM line_items li
+         JOIN pay_periods pp ON pp.id = li.pay_period_id
+         WHERE pp.budget_id = $1 AND pp.account_id = $2 AND pp.start_date = $3
+           AND NOT li.cleared AND li.planned_amount_cents <> 0`,
+        [budget.id, account.id, current.start]
+      );
+      if (rows[0].n > 0) {
+        out.push({
+          key: `uncleared:${account.id}:${current.start}`,
+          severity: 'info',
+          title: `${account.name}: ${rows[0].n} item${rows[0].n === 1 ? '' : 's'} not cleared — period ends soon`,
+          amountCents: null,
+          date: current.end,
+          link: `/period/${current.start}?account=${account.id}`,
+        });
+      }
     }
   }
 

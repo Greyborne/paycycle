@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { Link, useParams } from 'react-router-dom';
+import { Link, useParams, useSearchParams } from 'react-router-dom';
 import { api } from '../api.js';
 import { useAccount, useAuth } from '../App.jsx';
 import { centsToInput, fmtDate, fmtMoney, fmtRange, parseMoney, todayISO } from '../format.js';
@@ -522,8 +522,25 @@ function PeriodColumn({ data, currency, userEmail, tags, accountName, onChanged 
 export default function PeriodDetail() {
   const { start } = useParams();
   const { user } = useAuth();
-  const { accountId } = useAccount();
+  const { accountId, setAccountId } = useAccount();
   const { base } = useAccounts();
+  const [searchParams] = useSearchParams();
+
+  // A notification for a specific account links here with ?account=<id> so
+  // the page (and the global account switcher) follow it to that account,
+  // rather than showing whatever account the user last had selected. Only
+  // acts when the param is present and actually differs from the current
+  // selection - keyed on the param value itself so it fires once per
+  // navigation and can't ping-pong with the context updating accountId.
+  const accountParam = searchParams.get('account');
+  useEffect(() => {
+    if (accountParam == null) return;
+    const parsed = Number(accountParam);
+    if (Number.isNaN(parsed)) return;
+    if (parsed === accountId) return;
+    setAccountId(parsed);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [accountParam]);
   const currency = user.currency;
   const [periods, setPeriods] = useState([]);
   const [tags, setTags] = useState([]);
