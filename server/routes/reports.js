@@ -101,9 +101,17 @@ router.get('/summary', async (req, res, next) => {
     // each account has its own cfg).
     const cfg = scoped ? await getConfig(req.budget.id, accountId) : await getConfig(req.budget.id);
     if (cfg) {
+      // Real periods must be scoped the same way cfg is (migration 013: each
+      // account has its own periods). When scoped, restrict to this
+      // account's rows so overlapsReal/firstRealStart reflect only its own
+      // history; unscoped (household roll-up) intentionally keeps walking
+      // every account's periods together with a single cfg — cadences can
+      // legitimately differ across accounts once periods are per-account,
+      // so this is a known simplification for the household view, not a bug
+      // to "fix" here.
       const { rows: realPeriods } = await q(
-        'SELECT start_date, end_date FROM pay_periods WHERE budget_id = $1 ORDER BY start_date',
-        [req.budget.id]
+        `SELECT start_date, end_date FROM pay_periods WHERE budget_id = $1${scoped ? ' AND account_id = $2' : ''} ORDER BY start_date`,
+        scoped ? [req.budget.id, accountId] : [req.budget.id]
       );
       let templates = (await loadTemplates(req.budget.id)).filter((t) => t.category_type !== 'tag');
       if (scoped) templates = templates.filter((t) => (t.account_id ?? defaultId) === accountId);
