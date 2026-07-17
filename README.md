@@ -137,8 +137,9 @@ To update: `git pull && docker compose up -d --build`.
 ### Using a prebuilt image
 
 If you don't want to build locally, replace the `build: .` line in
-`docker-compose.yml` with a published image (multi-arch, amd64 + arm64 — runs
-on a Raspberry Pi):
+`docker-compose.yml` with a published image. Published images are
+**linux/amd64 only** — arm64 (e.g. Raspberry Pi) is not supported; build
+locally with `build: .` on arm64 hosts:
 
 ```yaml
   app:
@@ -194,10 +195,10 @@ See [TROUBLESHOOTING.md](TROUBLESHOOTING.md).
 All persistent state lives in the `paycycle-db` named volume. To back up:
 
 ```bash
-docker compose exec db pg_dump -U paycycle paycycle | gzip > paycycle-backup-$(date +%F).sql.gz
+docker compose exec -T db pg_dump -U paycycle -d paycycle --clean --if-exists | gzip > paycycle-backup-$(date +%F).sql.gz
 ```
 
-To restore into a fresh install:
+To restore:
 
 ```bash
 gunzip -c paycycle-backup-YYYY-MM-DD.sql.gz | docker compose exec -T db psql -U paycycle paycycle
@@ -250,8 +251,9 @@ effective-dated amounts. Notes on the edges:
 
 ## Publishing a release image
 
-The image is plain multi-arch friendly (pure-JS dependencies, `node:22-alpine`
-base). To build and push amd64 + arm64 to a registry:
+Published images are amd64 only — arm64 is not supported (cross-arch
+emulation in CI hung, so it's a deliberate non-goal). To build and push
+amd64 to a registry:
 
 ```bash
 docker login
