@@ -150,9 +150,33 @@ export async function resolveAccountId(budgetId, raw) {
   return getDefaultAccountId(budgetId);
 }
 
-export async function getConfig(budgetId) {
-  const { rows } = await q('SELECT * FROM pay_period_configs WHERE budget_id = $1', [budgetId]);
+// One config row per account (migration 013). `accountId = null` resolves to
+// the budget's default account (is_default AND NOT archived) - the bridge
+// that keeps every caller not yet rewired to pass an explicit account
+// working during the transition (docs/plans/account-first-periods.md).
+export async function getConfig(budgetId, accountId = null) {
+  const acct = accountId ?? await getDefaultAccountId(budgetId);
+  const { rows } = await q(
+    'SELECT * FROM pay_period_configs WHERE budget_id = $1 AND account_id = $2',
+    [budgetId, acct]
+  );
   return rows[0] || null;
+}
+
+// Every non-archived account of the budget with its own config, for callers
+// that must iterate every account rather than resolve a single default one
+// (e.g. ensureMaterialized). A non-archived account with no config row is
+// included with cfg: null (should not happen post-migration, but callers
+// must not assume every entry has one).
+export async function getAccountConfigs(budgetId) {
+  const accounts = (await getAccounts(budgetId)).filter((a) => !a.archived);
+  if (!accounts.length) return [];
+  const { rows: configs } = await q(
+    'SELECT * FROM pay_period_configs WHERE account_id = ANY($1::int[])',
+    [accounts.map((a) => a.id)]
+  );
+  const byAccount = new Map(configs.map((c) => [c.account_id, c]));
+  return accounts.map((account) => ({ account, cfg: byAccount.get(account.id) || null }));
 }
 
 // Templates with their amount history (ascending by effective date).
@@ -227,7 +251,8 @@ export async function clearLineItemForTransaction(dbc, template, { periodId, dat
      FROM line_items li
      JOIN pay_periods pp ON pp.id = li.pay_period_id
      JOIN pay_periods cur ON cur.id = $1
-     WHERE pp.budget_id = cur.budget_id AND pp.start_date < cur.start_date AND pp.closed_at IS NULL
+     WHERE pp.budget_id = cur.budget_id AND pp.account_id = cur.account_id
+       AND pp.start_date < cur.start_date AND pp.closed_at IS NULL
        AND li.category_template_id = $2 AND NOT li.cleared AND li.planned_amount_cents <> 0
      ORDER BY pp.start_date DESC LIMIT 1`,
     [periodId, template.id]
@@ -291,10 +316,11 @@ export async function setAmountGoingForward(dbc, budgetId, cfg, categoryTemplate
   );
   const template = { ...tRows[0], history: hist };
   const defaultAccountId = await getDefaultAccountId(budgetId);
+  const scopeAccountId = template.account_id ?? defaultAccountId;
   const { rows: periods } = await dbc.query(
     `SELECT id, start_date, end_date FROM pay_periods
-     WHERE budget_id = $1 AND start_date >= $2 AND closed_at IS NULL ORDER BY start_date`,
-    [budgetId, effStart]
+     WHERE start_date >= $1 AND account_id = $2 AND closed_at IS NULL ORDER BY start_date`,
+    [effStart, scopeAccountId]
   );
   let touched = 0;
   for (const p of periods) {
@@ -315,16 +341,20 @@ export async function setAmountGoingForward(dbc, budgetId, cfg, categoryTemplate
 // Insert line items for any active template that applies to the period but
 // has no row yet (covers both fresh materialization and categories added
 // mid-period). Existing rows are never touched - they are frozen snapshots.
-// Each item is attributed to the template's account (or the default).
+// Periods are now per-account rows (migration 013): only templates that
+// belong to `periodRow.account_id` - a template belongs to account A when
+// (template.account_id ?? defaultAccountId) === A - generate a line item on
+// it, and the item is always attributed to that period's account.
 async function syncLineItems(client, periodRow, templates, defaultAccountId) {
   for (const t of templates) {
     if (t.category_type === 'tag') continue; // tags never generate line items
+    if ((t.account_id ?? defaultAccountId) !== periodRow.account_id) continue;
     const planned = plannedForPeriod(t, { start: periodRow.start_date, end: periodRow.end_date });
     if (planned === null) continue;
     await client.query(
       `INSERT INTO line_items (pay_period_id, category_template_id, planned_amount_cents, account_id)
        VALUES ($1, $2, $3, $4) ON CONFLICT (pay_period_id, category_template_id) DO NOTHING`,
-      [periodRow.id, t.id, planned, t.account_id ?? defaultAccountId]
+      [periodRow.id, t.id, planned, periodRow.account_id]
     );
   }
 }
@@ -340,61 +370,72 @@ export function templateInPeriod(template, period) {
 // Create rows for every period from the last materialized one — or, on first
 // run, the period containing the earliest account start date (or today) — up
 // through today, and make sure the current period's line items reflect
-// current active templates.
-export async function ensureMaterialized(budgetId, cfg) {
+// current active templates. Now runs once PER ACCOUNT of the budget
+// (migration 013 - each account carries its own cadence/anchor and its own
+// period rows): a config-change callback used to take a `cfg` second
+// argument; that is no longer needed (configs are loaded per-account
+// internally), so it is dropped. Any caller still passing one is unaffected
+// - JS silently ignores an undeclared extra argument.
+export async function ensureMaterialized(budgetId) {
   const today = todayISO();
   const templates = await loadTemplates(budgetId);
   const defaultAccountId = await getDefaultAccountId(budgetId);
+  const accountConfigs = await getAccountConfigs(budgetId);
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
-    const { rows: last } = await client.query(
-      'SELECT * FROM pay_periods WHERE budget_id = $1 ORDER BY start_date DESC LIMIT 1',
-      [budgetId]
-    );
-    let next;
-    if (!last.length) {
-      // A fresh budget begins tracking at the earliest account start date
-      // (letting a user backdate to a chosen payday), else today.
-      const { rows: startRows } = await client.query(
-        "SELECT MIN(started_on)::text AS s FROM accounts WHERE budget_id = $1 AND started_on IS NOT NULL",
-        [budgetId]
+    for (const { account, cfg } of accountConfigs) {
+      if (!cfg) continue; // no config yet for this account - nothing to materialize
+      const acctTemplates = templates.filter((t) => (t.account_id ?? defaultAccountId) === account.id);
+      const { rows: last } = await client.query(
+        'SELECT * FROM pay_periods WHERE account_id = $1 ORDER BY start_date DESC LIMIT 1',
+        [account.id]
       );
-      const anchor = startRows[0].s && startRows[0].s < today ? startRows[0].s : today;
-      next = periodContaining(cfg, anchor);
-    } else {
-      next = periodContaining(cfg, addDays(last[0].end_date, 1));
-      // If the cadence config changed, the next computed period can overlap
-      // the last real one; clip it so real periods never overlap.
-      if (next.start <= last[0].end_date) {
-        next = next.end > last[0].end_date
-          ? { start: addDays(last[0].end_date, 1), end: next.end }
-          : periodAfter(cfg, { start: next.start, end: last[0].end_date });
+      let next;
+      if (!last.length) {
+        // A fresh account begins tracking at its own start date (letting a
+        // user backdate to a chosen payday), else today.
+        const { rows: startRows } = await client.query(
+          'SELECT started_on::text AS s FROM accounts WHERE id = $1',
+          [account.id]
+        );
+        const anchor = startRows[0].s && startRows[0].s < today ? startRows[0].s : today;
+        next = periodContaining(cfg, anchor);
+      } else {
+        next = periodContaining(cfg, addDays(last[0].end_date, 1));
+        // If the cadence config changed, the next computed period can overlap
+        // the last real one; clip it so real periods never overlap.
+        if (next.start <= last[0].end_date) {
+          next = next.end > last[0].end_date
+            ? { start: addDays(last[0].end_date, 1), end: next.end }
+            : periodAfter(cfg, { start: next.start, end: last[0].end_date });
+        }
       }
-    }
-    while (next.start <= today) {
-      const { rows } = await client.query(
-        `INSERT INTO pay_periods (budget_id, start_date, end_date) VALUES ($1, $2, $3)
-         ON CONFLICT (budget_id, start_date) DO UPDATE SET end_date = pay_periods.end_date
-         RETURNING *`,
-        [budgetId, next.start, next.end]
+      while (next.start <= today) {
+        const { rows } = await client.query(
+          `INSERT INTO pay_periods (budget_id, account_id, start_date, end_date) VALUES ($1, $2, $3, $4)
+           ON CONFLICT (account_id, start_date) DO UPDATE SET end_date = pay_periods.end_date
+           RETURNING *`,
+          [budgetId, account.id, next.start, next.end]
+        );
+        await syncLineItems(client, rows[0], acctTemplates, defaultAccountId);
+        next = periodAfter(cfg, next);
+      }
+      // A category can be added after periods already exist. Top up every
+      // open (non-closed) period of this account so its line items land in
+      // all the periods it applies to — not just the one containing today.
+      // Without this, a monthly category whose due day never falls in
+      // today's period (e.g. added on the 8th, due on the 15th, on a
+      // schedule where the current period ends the 14th) would silently
+      // miss every period it belongs to. Closed periods are frozen snapshots
+      // and are never touched; syncLineItems only inserts missing rows
+      // (ON CONFLICT DO NOTHING), so edited amounts on existing items survive.
+      const { rows: openPeriods } = await client.query(
+        'SELECT * FROM pay_periods WHERE account_id = $1 AND closed_at IS NULL ORDER BY start_date',
+        [account.id]
       );
-      await syncLineItems(client, rows[0], templates, defaultAccountId);
-      next = periodAfter(cfg, next);
+      for (const p of openPeriods) await syncLineItems(client, p, acctTemplates, defaultAccountId);
     }
-    // A category can be added after periods already exist. Top up every open
-    // (non-closed) period so its line items land in all the periods it applies
-    // to — not just the one containing today. Without this, a monthly category
-    // whose due day never falls in today's period (e.g. added on the 8th, due
-    // on the 15th, on a schedule where the current period ends the 14th) would
-    // silently miss every period it belongs to. Closed periods are frozen
-    // snapshots and are never touched; syncLineItems only inserts missing rows
-    // (ON CONFLICT DO NOTHING), so edited amounts on existing items survive.
-    const { rows: openPeriods } = await client.query(
-      'SELECT * FROM pay_periods WHERE budget_id = $1 AND closed_at IS NULL ORDER BY start_date',
-      [budgetId]
-    );
-    for (const p of openPeriods) await syncLineItems(client, p, templates, defaultAccountId);
     await client.query('COMMIT');
   } catch (err) {
     await client.query('ROLLBACK');
@@ -406,9 +447,17 @@ export async function ensureMaterialized(budgetId, cfg) {
 
 // All materialized periods with their aggregate totals, ordered by date.
 // With an account scope, only line items and transactions attributed to that
-// account count (a NULL attribution means the default account).
+// account count (a NULL attribution means the default account), AND the
+// period rows themselves are constrained to that account (migration 013:
+// pay_periods is now per-account, so an account's projection must only ever
+// see its own period rows - two accounts can have periods sharing the same
+// start_date without being the same period). Unscoped (scope === null) still
+// returns every account's period rows for this budget_id — that now yields
+// multiple rows per date (one per account); reconciling that into a single
+// household view is Phase 5's problem, not this function's.
 async function materializedSummaries(budgetId, scope = null) {
   const acctFilter = scope ? 'AND COALESCE(li.account_id, $2) = $3' : '';
+  const periodAcctFilter = scope ? 'AND pp.account_id = $3' : '';
   const acctParams = scope ? [scope.defaultId, scope.accountId] : [];
   const { rows: periods } = await q(
     `SELECT pp.id, pp.start_date, pp.end_date,
@@ -420,7 +469,7 @@ async function materializedSummaries(budgetId, scope = null) {
      FROM pay_periods pp
      LEFT JOIN line_items li ON li.pay_period_id = pp.id ${acctFilter}
      LEFT JOIN category_templates ct ON ct.id = li.category_template_id
-     WHERE pp.budget_id = $1
+     WHERE pp.budget_id = $1 ${periodAcctFilter}
      GROUP BY pp.id
      ORDER BY pp.start_date`,
     [budgetId, ...acctParams]
@@ -587,19 +636,24 @@ export async function buildProjection(budget, cfg, { months = 24, accountId = nu
 // "current" period is the earliest not-yet-closed materialized one — before
 // any close has ever happened that is simply the earliest recorded period,
 // and once every recorded period is closed it is the schedule period after
-// the latest closed one (which may lie in the future).
-export async function getLifecycle(budgetId, cfg) {
+// the latest closed one (which may lie in the future). Scoped to one account
+// (migration 013 - lifecycle is now per-account); `accountId = null` resolves
+// to the budget's default account, same bridge as getConfig. `cfg` must be
+// that account's config (used only to compute the future "current" period
+// when every recorded period for the account is closed).
+export async function getLifecycle(budgetId, cfg, accountId = null) {
+  const acct = accountId ?? await getDefaultAccountId(budgetId);
   const { rows: closed } = await q(
     `SELECT start_date, end_date FROM pay_periods
-     WHERE budget_id = $1 AND closed_at IS NOT NULL ORDER BY start_date DESC LIMIT 1`,
-    [budgetId]
+     WHERE account_id = $1 AND closed_at IS NOT NULL ORDER BY start_date DESC LIMIT 1`,
+    [acct]
   );
   const latestClosedStart = closed[0]?.start_date ?? null;
   const { rows: open } = await q(
     `SELECT start_date FROM pay_periods
-     WHERE budget_id = $1 AND closed_at IS NULL ${closed.length ? 'AND start_date > $2' : ''}
+     WHERE account_id = $1 AND closed_at IS NULL ${closed.length ? 'AND start_date > $2' : ''}
      ORDER BY start_date LIMIT 1`,
-    closed.length ? [budgetId, closed[0].start_date] : [budgetId]
+    closed.length ? [acct, closed[0].start_date] : [acct]
   );
   if (open.length) return { currentStart: open[0].start_date, latestClosedStart };
   const cur = closed.length
@@ -610,8 +664,12 @@ export async function getLifecycle(budgetId, cfg) {
 
 // Make sure the schedule period following `period` exists as a real row with
 // line items (used when closing hands "current" to a period that may still
-// lie in the future, and as the carry target for uncleared items).
-export async function materializePeriodAfter(budgetId, cfg, period) {
+// lie in the future, and as the carry target for uncleared items). Scoped to
+// one account (migration 013 - pay_periods is per-account): `accountId` and
+// `cfg` must both be that account's, and only that account's templates
+// generate line items on the new row (syncLineItems filters to
+// periodRow.account_id).
+export async function materializePeriodAfter(budgetId, accountId, cfg, period) {
   let next = periodContaining(cfg, addDays(period.end, 1));
   if (next.start <= period.end) {
     next = next.end > period.end
@@ -624,10 +682,10 @@ export async function materializePeriodAfter(budgetId, cfg, period) {
   try {
     await client.query('BEGIN');
     const { rows } = await client.query(
-      `INSERT INTO pay_periods (budget_id, start_date, end_date) VALUES ($1, $2, $3)
-       ON CONFLICT (budget_id, start_date) DO UPDATE SET end_date = pay_periods.end_date
+      `INSERT INTO pay_periods (budget_id, account_id, start_date, end_date) VALUES ($1, $2, $3, $4)
+       ON CONFLICT (account_id, start_date) DO UPDATE SET end_date = pay_periods.end_date
        RETURNING *`,
-      [budgetId, next.start, next.end]
+      [budgetId, accountId, next.start, next.end]
     );
     await syncLineItems(client, rows[0], templates, defaultAccountId);
     await client.query('COMMIT');
@@ -640,46 +698,47 @@ export async function materializePeriodAfter(budgetId, cfg, period) {
   }
 }
 
-// Cleared balances for one period as of now — the numbers frozen into the
-// close-out snapshot: household total plus each base-currency account.
-export async function clearedBalancesForPeriod(budget, cfg, startDate) {
-  const total = await buildProjection(budget, cfg, { months: 12 });
-  const snapshot = {
-    total: total.entries.find((e) => e.start === startDate)?.clearedBalance ?? null,
-    accounts: {},
-  };
-  const accounts = (await getAccounts(budget.id)).filter((a) => !a.currency);
-  for (const account of accounts) {
-    const scoped = await buildProjection(budget, cfg, { months: 12, accountId: account.id });
-    snapshot.accounts[account.id] = scoped.entries.find((e) => e.start === startDate)?.clearedBalance ?? null;
-  }
-  return snapshot;
+// Cleared balances for one period as of now — the number frozen into the
+// close-out snapshot, scoped to a single account (migration 013 collapsed the
+// stored snapshot down to that account's own value; there is no more
+// per-period "accounts" map).
+export async function clearedBalancesForPeriod(budget, cfg, startDate, accountId) {
+  const scoped = await buildProjection(budget, cfg, { months: 12, accountId });
+  return { total: scoped.entries.find((e) => e.start === startDate)?.clearedBalance ?? null };
 }
 
 // Closed periods created outside the normal close flow (migration 008 closes
-// legacy periods in bulk) lack a frozen snapshot; compute and store one at
-// boot so their Cleared balance card is real and never recalculates.
+// legacy periods in bulk) lack a frozen snapshot, or legacy bulk-closed rows
+// carry a snapshot whose "total" is null (e.g. an account the old household
+// snapshot's "accounts" map never had an entry for). Compute and store the
+// per-account scoped snapshot at boot so their Cleared balance card is real
+// and never recalculates. A period is only ever selected here while its
+// snapshot is missing/incomplete, so a fully-populated DB finds nothing and
+// this is a safe no-op re-run after re-run (migration 013 collapsed
+// closed_snapshot down to a single per-account {"total"} value).
 export async function backfillClosedSnapshots() {
   const { rows: budgets } = await q(
     `SELECT DISTINCT b.* FROM budgets b
      JOIN pay_periods pp ON pp.budget_id = b.id
-     WHERE pp.closed_at IS NOT NULL AND pp.closed_snapshot IS NULL`
+     WHERE pp.closed_at IS NOT NULL
+       AND (pp.closed_snapshot IS NULL OR pp.closed_snapshot->>'total' IS NULL)`
   );
   let count = 0;
   for (const budget of budgets) {
-    const cfg = await getConfig(budget.id);
-    if (!cfg) continue;
     const { rows: periods } = await q(
-      `SELECT start_date FROM pay_periods
-       WHERE budget_id = $1 AND closed_at IS NOT NULL AND closed_snapshot IS NULL
+      `SELECT start_date, account_id FROM pay_periods
+       WHERE budget_id = $1 AND closed_at IS NOT NULL
+         AND (closed_snapshot IS NULL OR closed_snapshot->>'total' IS NULL)
        ORDER BY start_date`,
       [budget.id]
     );
     for (const p of periods) {
-      const snapshot = await clearedBalancesForPeriod(budget, cfg, p.start_date);
+      const cfg = await getConfig(budget.id, p.account_id);
+      if (!cfg) continue;
+      const snapshot = await clearedBalancesForPeriod(budget, cfg, p.start_date, p.account_id);
       await q(
-        'UPDATE pay_periods SET closed_snapshot = $1 WHERE budget_id = $2 AND start_date = $3',
-        [JSON.stringify(snapshot), budget.id, p.start_date]
+        'UPDATE pay_periods SET closed_snapshot = $1 WHERE account_id = $2 AND start_date = $3',
+        [JSON.stringify(snapshot), p.account_id, p.start_date]
       );
       count++;
     }
@@ -692,14 +751,16 @@ export async function backfillClosedSnapshots() {
 // read-only projected values derived from the templates.
 export async function getPeriodDetail(budget, cfg, startDate, accountId = null) {
   const today = todayISO();
+  // Periods are per-account rows (migration 013); accountId = null resolves
+  // to the budget's default account (same bridge as getConfig/getLifecycle).
+  const defaultAccountId = await getDefaultAccountId(budget.id);
+  const resolvedAccountId = accountId ?? defaultAccountId;
+  const scope = { accountId: resolvedAccountId, defaultId: defaultAccountId };
   const { rows: matRows } = await q(
-    'SELECT * FROM pay_periods WHERE budget_id = $1 AND start_date = $2',
-    [budget.id, startDate]
+    'SELECT * FROM pay_periods WHERE account_id = $1 AND start_date = $2',
+    [resolvedAccountId, startDate]
   );
-  const scope = accountId
-    ? { accountId, defaultId: await getDefaultAccountId(budget.id) }
-    : null;
-  const projection = await buildProjection(budget, cfg, { months: 60, accountId });
+  const projection = await buildProjection(budget, cfg, { months: 60, accountId: resolvedAccountId });
   let entry = projection.entries.find((e) => e.start === startDate) || null;
 
   // Periods before the first recorded one have no projection entry, but the
@@ -744,7 +805,7 @@ export async function getPeriodDetail(budget, cfg, startDate, accountId = null) 
     }
   }
 
-  const lifecycle = await getLifecycle(budget.id, cfg);
+  const lifecycle = await getLifecycle(budget.id, cfg, resolvedAccountId);
   const statusOf = (row) => {
     if (row?.closed_at) return 'closed';
     if (startDate === lifecycle.currentStart) return 'current';
@@ -805,11 +866,13 @@ export async function getPeriodDetail(budget, cfg, startDate, accountId = null) 
       [periodRow.id, ...scopeParams]
     );
     // A closed period's cleared balance is the snapshot frozen at close-out,
-    // never recalculated.
+    // never recalculated. Migration 013 collapsed each period's snapshot down
+    // to that one account's own value ({"total": <cents>} - periodRow is
+    // already that account's period, so its own "total" is the right number;
+    // there is no more per-period "accounts" map to index into.
     let summary = entry || null;
     if (summary && periodRow.closed_at && periodRow.closed_snapshot) {
-      const snap = periodRow.closed_snapshot;
-      const frozen = scope ? snap.accounts?.[scope.accountId] : snap.total;
+      const frozen = periodRow.closed_snapshot.total;
       summary = { ...summary, clearedBalance: frozen ?? summary.clearedBalance };
     }
     return {

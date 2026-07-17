@@ -1,10 +1,11 @@
 import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { Link, useParams } from 'react-router-dom';
+import { Link, useParams, useSearchParams } from 'react-router-dom';
 import { api } from '../api.js';
 import { useAccount, useAuth } from '../App.jsx';
 import { centsToInput, fmtDate, fmtMoney, fmtRange, parseMoney, todayISO } from '../format.js';
 import HealthBadge from '../components/HealthBadge.jsx';
 import QuickAddTransaction from '../components/QuickAddTransaction.jsx';
+import { useAccounts } from '../useAccounts.js';
 
 // The page shows a window of consecutive periods side by side; the column
 // count adapts to the available width (minimize the sidebar for more).
@@ -129,27 +130,77 @@ const STATUS_BADGES = {
   projected: ['health-none', 'Projected', 'Computed from your categories'],
 };
 
-function ClosePeriodDialog({ period, currency, onCancel, onDone }) {
+// Same focus-trap approach as RuleDrawer.jsx's FOCUSABLE: `summary` has no
+// tabindex of its own but is natively focusable, so it must be tracked as an
+// ordinary mid-sequence stop — otherwise the boundary-wrap logic below (which
+// treats "focus landed somewhere untracked" as having hit an edge) misfires.
+const DIALOG_FOCUSABLE = 'summary, a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), '
+  + 'textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
+
+function ClosePeriodDialog({ period, currency, accountId, accountName, onCancel, onDone }) {
   const [preview, setPreview] = useState(null);
   const [resolutions, setResolutions] = useState({});
   const [discrepancy, setDiscrepancy] = useState('adjust');
   const [error, setError] = useState(null);
   const [busy, setBusy] = useState(false);
 
+  const dialogRef = useRef(null);
+  const headingRef = useRef(null);
+
+  // Move focus into the dialog on open so a screen reader announces it.
   useEffect(() => {
-    api(`/periods/${period.start}/close-preview`)
+    headingRef.current?.focus();
+  }, []);
+
+  // Escape closes; Tab/Shift-Tab is trapped inside the dialog — same pattern
+  // as RuleDrawer.jsx.
+  useEffect(() => {
+    const onKeyDown = (e) => {
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        onCancel();
+        return;
+      }
+      if (e.key !== 'Tab' || !dialogRef.current) return;
+      const list = Array.from(dialogRef.current.querySelectorAll(DIALOG_FOCUSABLE));
+      if (list.length === 0) return;
+      const first = list[0];
+      const last = list[list.length - 1];
+      // The initially-focused heading has tabindex="-1" so it's deliberately
+      // NOT in `list` — but that also means it isn't `first`/`last`, so it
+      // must be treated as an implicit boundary too: any active element that
+      // isn't one of our tracked focusables wraps just like being on the
+      // first/last one would.
+      const isTracked = list.includes(document.activeElement);
+      if (e.shiftKey) {
+        if (!isTracked || document.activeElement === first) {
+          e.preventDefault();
+          last.focus();
+        }
+      } else if (!isTracked || document.activeElement === last) {
+        e.preventDefault();
+        first.focus();
+      }
+    };
+    document.addEventListener('keydown', onKeyDown);
+    return () => document.removeEventListener('keydown', onKeyDown);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [onCancel]);
+
+  useEffect(() => {
+    api(`/periods/${period.start}/close-preview?account=${accountId ?? ''}`)
       .then((d) => {
         setPreview(d);
         setResolutions(Object.fromEntries(d.uncleared.map((u) => [u.id, 'clear'])));
       })
       .catch((err) => setError(err.message));
-  }, [period.start]);
+  }, [period.start, accountId]);
 
   const submit = async () => {
     setBusy(true);
     setError(null);
     try {
-      await api(`/periods/${period.start}/close`, {
+      await api(`/periods/${period.start}/close?account=${accountId ?? ''}`, {
         method: 'POST',
         body: {
           resolutions,
@@ -165,8 +216,16 @@ function ClosePeriodDialog({ period, currency, onCancel, onDone }) {
 
   return (
     <div className="modal-backdrop" onClick={onCancel}>
-      <div className="modal" role="dialog" aria-modal="true" onClick={(e) => e.stopPropagation()}>
-        <h3>Close out {fmtRange(period.start, period.end)}</h3>
+      <div
+        className="modal" role="dialog" aria-modal="true" aria-labelledby="close-period-title"
+        ref={dialogRef} onClick={(e) => e.stopPropagation()}
+      >
+        <h3 id="close-period-title" ref={headingRef} tabIndex={-1}>
+          Close out {fmtRange(period.start, period.end)}{accountName ? ` — ${accountName}` : ''}
+        </h3>
+        <p className="muted small">
+          Only {accountName ? `${accountName}'s` : 'this account\'s'} period is closed — other accounts are unaffected.
+        </p>
         {!preview && !error && <p className="muted">Checking…</p>}
         {preview && (
           <>
@@ -239,21 +298,45 @@ function ClosePeriodDialog({ period, currency, onCancel, onDone }) {
   );
 }
 
-function PeriodColumn({ data, currency, userEmail, tags, onChanged }) {
+function PeriodColumn({ data, currency, userEmail, tags, accountName, onChanged }) {
   const { period, expenses, income, transactions, summary } = data;
+  const accountId = data.accountId;
   const editable = period.editable;
   const [closing, setClosing] = useState(false);
   const [badgeClass, badgeLabel, badgeTitle] = STATUS_BADGES[period.status] || STATUS_BADGES.projected;
+  const closeBtnRef = useRef(null);
+  const headRef = useRef(null);
+
+  // Restore focus to whatever triggered the dialog's opening. On a plain
+  // cancel/escape/backdrop close nothing about the period changes, so the
+  // "Close" button is guaranteed to still be there — focus it BEFORE
+  // unmounting the dialog so there's no in-between moment where focus drops
+  // to <body>. A successful close, though, can make the button disappear
+  // (period.canClose flips false once closed) once onChanged's reload
+  // commits, so fall back to the period's own heading in that case.
+  const returnFocus = () => {
+    if (closeBtnRef.current?.isConnected) closeBtnRef.current.focus();
+    else headRef.current?.focus();
+  };
+  const cancelClosing = () => {
+    returnFocus();
+    setClosing(false);
+  };
+  const finishClosing = () => {
+    setClosing(false);
+    onChanged();
+    requestAnimationFrame(() => requestAnimationFrame(returnFocus));
+  };
 
   const patchItem = async (item, body) => {
     if (item.id == null) {
       // A read-only $0 placeholder — create the line item for this period.
-      await api(`/periods/${period.start}/line-items`, {
+      await api(`/periods/${period.start}/line-items?account=${accountId ?? ''}`, {
         method: 'POST',
         body: { categoryTemplateId: item.category_template_id, ...body },
       });
     } else {
-      await api(`/periods/line-items/${item.id}`, { method: 'PATCH', body });
+      await api(`/periods/line-items/${item.id}?account=${accountId ?? ''}`, { method: 'PATCH', body });
     }
     onChanged();
   };
@@ -263,14 +346,14 @@ function PeriodColumn({ data, currency, userEmail, tags, onChanged }) {
   };
   const reopen = async () => {
     const ok = window.confirm(
-      `Reopen ${fmtRange(period.start, period.end)}?\n\n`
+      `Reopen ${fmtRange(period.start, period.end)}${accountName ? ` for ${accountName}` : ''}?\n\n`
       + 'It becomes your Current period again, and every period after it — including the one that is '
       + 'currently active — reverts to Projected. Items that were carried forward or removed during '
       + 'close-out are restored.'
     );
     if (!ok) return;
     try {
-      await api(`/periods/${period.start}/reopen`, { method: 'POST' });
+      await api(`/periods/${period.start}/reopen?account=${accountId ?? ''}`, { method: 'POST' });
       onChanged();
     } catch (err) {
       window.alert(err.message);
@@ -283,10 +366,13 @@ function PeriodColumn({ data, currency, userEmail, tags, onChanged }) {
           Cleared balance is always visible for reconciling against the bank. */}
       <div className="period-col-sticky">
         <div className="card period-col-head">
-          <h2>{fmtRange(period.start, period.end)}</h2>
+          <div>
+            <h2 ref={headRef} tabIndex={-1}>{fmtRange(period.start, period.end)}</h2>
+            {accountName && <div className="muted small">{accountName}</div>}
+          </div>
           <div className="period-col-actions">
             {period.canClose && (
-              <button className="btn period-close-btn" onClick={() => setClosing(true)}>Close</button>
+              <button ref={closeBtnRef} className="btn period-close-btn" onClick={() => setClosing(true)}>Close</button>
             )}
             {period.canReopen ? (
               <button
@@ -344,8 +430,10 @@ function PeriodColumn({ data, currency, userEmail, tags, onChanged }) {
         <ClosePeriodDialog
           period={period}
           currency={currency}
-          onCancel={() => setClosing(false)}
-          onDone={() => { setClosing(false); onChanged(); }}
+          accountId={accountId}
+          accountName={accountName}
+          onCancel={cancelClosing}
+          onDone={finishClosing}
         />
       )}
 
@@ -434,7 +522,25 @@ function PeriodColumn({ data, currency, userEmail, tags, onChanged }) {
 export default function PeriodDetail() {
   const { start } = useParams();
   const { user } = useAuth();
-  const { accountId } = useAccount();
+  const { accountId, setAccountId } = useAccount();
+  const { base } = useAccounts();
+  const [searchParams] = useSearchParams();
+
+  // A notification for a specific account links here with ?account=<id> so
+  // the page (and the global account switcher) follow it to that account,
+  // rather than showing whatever account the user last had selected. Only
+  // acts when the param is present and actually differs from the current
+  // selection - keyed on the param value itself so it fires once per
+  // navigation and can't ping-pong with the context updating accountId.
+  const accountParam = searchParams.get('account');
+  useEffect(() => {
+    if (accountParam == null) return;
+    const parsed = Number(accountParam);
+    if (Number.isNaN(parsed)) return;
+    if (parsed === accountId) return;
+    setAccountId(parsed);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [accountParam]);
   const currency = user.currency;
   const [periods, setPeriods] = useState([]);
   const [tags, setTags] = useState([]);
@@ -532,6 +638,7 @@ export default function PeriodDetail() {
                 currency={currency}
                 userEmail={user.email}
                 tags={tags}
+                accountName={base.find((a) => a.id === data.accountId)?.name}
                 onChanged={load}
               />
             ))}

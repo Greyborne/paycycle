@@ -5,6 +5,7 @@ import { centsToInput, fmtMoney, parseMoney } from '../format.js';
 import { useAccounts } from '../useAccounts.js';
 
 const TYPES = ['checking', 'savings', 'credit', 'cash', 'other'];
+const CADENCES = ['weekly', 'biweekly', 'semimonthly', 'monthly', 'custom'];
 
 function AccountRow({ account, currency, onPatch }) {
   const [starting, setStarting] = useState(centsToInput(account.startingBalanceCents));
@@ -82,9 +83,13 @@ export default function AccountsCard() {
   const [starting, setStarting] = useState('');
   const [startedOn, setStartedOn] = useState('');
   const [accountCurrency, setAccountCurrency] = useState('');
+  const [cadence, setCadence] = useState('biweekly');
+  const [intervalDays, setIntervalDays] = useState('14');
   const [error, setError] = useState(null);
 
   if (!accounts) return null;
+
+  const isForeign = Boolean(accountCurrency.trim()) && accountCurrency.trim() !== (user?.currency ?? '');
 
   const patch = async (id, body) => {
     setError(null);
@@ -109,12 +114,16 @@ export default function AccountsCard() {
           startingBalanceCents: parseMoney(starting) ?? 0,
           startedOn: startedOn || undefined,
           currency: accountCurrency.trim() || undefined,
+          cadence: isForeign ? undefined : cadence,
+          intervalDays: !isForeign && cadence === 'custom' ? Number(intervalDays) : undefined,
         },
       });
       setName('');
       setStarting('');
       setStartedOn('');
       setAccountCurrency('');
+      setCadence('biweekly');
+      setIntervalDays('14');
       reload();
     } catch (err) {
       setError(err.message);
@@ -161,6 +170,26 @@ export default function AccountsCard() {
           maxLength={3} placeholder={user.currency} style={{ width: '5.5rem' }}
           title="Currency (leave as household currency, or a different code for a tracked foreign-currency account)"
         />
+        {!isForeign && (
+          <>
+            <select
+              value={cadence} onChange={(e) => setCadence(e.target.value)}
+              aria-label="Pay cadence"
+              title="How often this account's pay periods repeat"
+            >
+              {CADENCES.map((c) => <option key={c} value={c}>{c}</option>)}
+            </select>
+            {cadence === 'custom' && (
+              <input
+                type="number" min="2" max="185" required
+                value={intervalDays} onChange={(e) => setIntervalDays(e.target.value)}
+                className="cell-input" style={{ width: '5rem' }}
+                aria-label="Days per period"
+                title="Days per period"
+              />
+            )}
+          </>
+        )}
         <button className="btn btn-primary">Add account</button>
       </form>
       <p className="muted small">

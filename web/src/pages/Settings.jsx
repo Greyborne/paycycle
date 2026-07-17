@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { api } from '../api.js';
 import { useAuth } from '../App.jsx';
 import { centsToInput, parseMoney } from '../format.js';
@@ -20,8 +20,12 @@ export default function Settings() {
   const [healthy, setHealthy] = useState('');
   const [warning, setWarning] = useState('');
   const [drift, setDrift] = useState('5.00');
-  const [cadenceForm, setCadenceForm] = useState(null);
-  const [changeCadence, setChangeCadence] = useState(false);
+  const [payPeriodConfigs, setPayPeriodConfigs] = useState(null);
+  const [editingAccountId, setEditingAccountId] = useState(null);
+  const [editForm, setEditForm] = useState(null);
+  const [scheduleSaving, setScheduleSaving] = useState(false);
+  const [scheduleError, setScheduleError] = useState(null);
+  const [scheduleMessage, setScheduleMessage] = useState(null);
   const [message, setMessage] = useState(null);
   const [error, setError] = useState(null);
   const [currentPassword, setCurrentPassword] = useState('');
@@ -31,8 +35,47 @@ export default function Settings() {
   const [passwordMessage, setPasswordMessage] = useState(null);
   const [passwordSubmitting, setPasswordSubmitting] = useState(false);
 
+  // Focus management for the per-account schedule editor: expanding/collapsing
+  // a row swaps the "Change…" button for the CadenceFields/Cancel/Save markup
+  // (or back), which unmounts whatever was focused — without explicit handling
+  // the browser drops focus to <body>. `scheduleSectionRef` lets us reach into
+  // the just-rendered CadenceFields to focus its first field on open;
+  // `triggerRefs`/`headingRefs` remember each account's "Change…" button and
+  // heading so we can restore focus to a stable, guaranteed-present element on
+  // close (same idiom as PeriodDetail.jsx's returnFocus / RuleDrawer.jsx's
+  // triggerRefs Map in Transactions.jsx).
+  const scheduleSectionRef = useRef(null);
+  const sectionHeadingRef = useRef(null);
+  const triggerRefs = useRef(new Map());
+  const headingRefs = useRef(new Map());
+  const prevEditingAccountId = useRef(null);
+
+  const returnFocusToTrigger = (accountId) => {
+    const btn = triggerRefs.current.get(accountId);
+    if (btn && btn.isConnected) { btn.focus(); return; }
+    const heading = headingRefs.current.get(accountId);
+    if (heading && heading.isConnected) { heading.focus(); return; }
+    sectionHeadingRef.current?.focus();
+  };
+
+  // Runs after every render where editingAccountId changed. Since the row's
+  // markup swap happens in the same render as the state change, by the time
+  // this effect runs the new markup (CadenceFields on open, the "Change…"
+  // button on close) is already committed to the DOM, so a plain focus() call
+  // here — no rAF needed — lands on it instead of <body>.
   useEffect(() => {
-    api('/settings').then(({ user, payPeriodConfig, emailEnabled: enabled }) => {
+    const prev = prevEditingAccountId.current;
+    if (editingAccountId != null) {
+      const firstField = scheduleSectionRef.current?.querySelector('.cadence-options input');
+      firstField?.focus();
+    } else if (prev != null) {
+      returnFocusToTrigger(prev);
+    }
+    prevEditingAccountId.current = editingAccountId;
+  }, [editingAccountId]);
+
+  useEffect(() => {
+    api('/settings').then(({ user, payPeriodConfigs, emailEnabled: enabled }) => {
       setCurrency(user.currency);
       setEmailEnabled(enabled);
       setEmailNotifications(user.emailNotifications);
@@ -40,18 +83,56 @@ export default function Settings() {
       setHealthy(centsToInput(user.thresholdHealthyCents));
       setWarning(centsToInput(user.warningThresholdCents));
       setDrift(centsToInput(user.driftThresholdCents ?? 500));
-      setCadenceForm({
-        cadence: payPeriodConfig.cadence,
-        anchorDate: payPeriodConfig.anchorDate || '',
-        intervalDays: payPeriodConfig.intervalDays || 10,
-        day1: payPeriodConfig.day1 || 1,
-        day2: payPeriodConfig.day2 || 15,
-      });
+      setPayPeriodConfigs(payPeriodConfigs);
       setLoaded(true);
     });
   }, []);
 
   if (!loaded) return <div className="page-loading">Loading…</div>;
+
+  const startEditSchedule = (config) => {
+    setScheduleError(null);
+    setScheduleMessage(null);
+    setEditingAccountId(config.accountId);
+    setEditForm({
+      cadence: config.cadence,
+      anchorDate: config.anchorDate || '',
+      intervalDays: config.intervalDays || 10,
+      day1: config.day1 || 1,
+      day2: config.day2 || 15,
+    });
+  };
+
+  const cancelEditSchedule = () => {
+    setEditingAccountId(null);
+    setEditForm(null);
+  };
+
+  const saveSchedule = async (accountId) => {
+    setScheduleSaving(true);
+    setScheduleError(null);
+    try {
+      const { payPeriodConfigs: updated } = await api(`/settings/schedule/${accountId}`, {
+        method: 'PUT', body: cadenceBody(editForm),
+      });
+      setPayPeriodConfigs(updated);
+      setEditingAccountId(null);
+      setEditForm(null);
+      setScheduleMessage('Pay schedule saved.');
+    } catch (err) {
+      setScheduleError(err.message);
+    } finally {
+      setScheduleSaving(false);
+    }
+  };
+
+  const cadenceSummary = (config) => (
+    <>
+      {config.cadence === 'custom' ? `Every ${config.intervalDays} days` : config.cadence}
+      {config.cadence === 'semimonthly' && ` (days ${config.day1} & ${config.day2})`}
+      {config.cadence === 'monthly' && ` (day ${config.day1})`}
+    </>
+  );
 
   const save = async (e) => {
     e.preventDefault();
@@ -66,11 +147,9 @@ export default function Settings() {
         driftThresholdCents: parseMoney(drift) ?? 500,
         warningThresholdCents: parseMoney(warning) ?? 0,
       };
-      if (changeCadence) Object.assign(body, cadenceBody(cadenceForm));
       await api('/settings', { method: 'PUT', body });
       await refreshUser();
       setMessage('Settings saved.');
-      setChangeCadence(false);
     } catch (err) {
       setError(err.message);
     }
@@ -184,26 +263,89 @@ export default function Settings() {
           )}
         </section>
 
-        <section className="card">
-          <h2>Pay schedule</h2>
-          {!changeCadence ? (
-            <div className="cadence-summary">
-              <span className="muted">
-                {cadenceForm.cadence === 'custom' ? `Every ${cadenceForm.intervalDays} days` : cadenceForm.cadence}
-                {cadenceForm.cadence === 'semimonthly' && ` (days ${cadenceForm.day1} & ${cadenceForm.day2})`}
-                {cadenceForm.cadence === 'monthly' && ` (day ${cadenceForm.day1})`}
-              </span>
-              <button type="button" className="btn btn-ghost" onClick={() => setChangeCadence(true)}>Change…</button>
-            </div>
+        <section className="card" ref={scheduleSectionRef}>
+          <h2 ref={sectionHeadingRef} tabIndex={-1}>Pay schedule</h2>
+          {payPeriodConfigs.length === 1 ? (
+            editingAccountId === payPeriodConfigs[0].accountId ? (
+              <>
+                <p className="muted small">
+                  Existing recorded periods are kept as-is; the new schedule applies from your next period forward.
+                </p>
+                <CadenceFields form={editForm} setForm={setEditForm} />
+                <div className="editor-actions">
+                  <button type="button" className="btn btn-ghost" onClick={cancelEditSchedule}>Cancel</button>
+                  <button
+                    type="button" className="btn btn-primary" disabled={scheduleSaving}
+                    onClick={() => saveSchedule(payPeriodConfigs[0].accountId)}
+                  >
+                    Save schedule
+                  </button>
+                </div>
+              </>
+            ) : (
+              <div className="cadence-summary">
+                <span className="muted">{cadenceSummary(payPeriodConfigs[0])}</span>
+                <button
+                  type="button" className="btn btn-ghost"
+                  ref={(el) => {
+                    if (el) triggerRefs.current.set(payPeriodConfigs[0].accountId, el);
+                    else triggerRefs.current.delete(payPeriodConfigs[0].accountId);
+                  }}
+                  onClick={() => startEditSchedule(payPeriodConfigs[0])}
+                >
+                  Change…
+                </button>
+              </div>
+            )
           ) : (
-            <>
-              <p className="muted small">
-                Existing recorded periods are kept as-is; the new schedule applies from your next period forward.
-              </p>
-              <CadenceFields form={cadenceForm} setForm={setCadenceForm} />
-              <button type="button" className="btn btn-ghost" onClick={() => setChangeCadence(false)}>Cancel schedule change</button>
-            </>
+            payPeriodConfigs.map((config) => (
+              <React.Fragment key={config.accountId}>
+                <h3
+                  tabIndex={-1}
+                  ref={(el) => {
+                    if (el) headingRefs.current.set(config.accountId, el);
+                    else headingRefs.current.delete(config.accountId);
+                  }}
+                >
+                  {config.accountName}
+                </h3>
+                {editingAccountId === config.accountId ? (
+                  <>
+                    <p className="muted small">
+                      Existing recorded periods are kept as-is; the new schedule applies from your next period forward.
+                    </p>
+                    <CadenceFields form={editForm} setForm={setEditForm} />
+                    <div className="editor-actions">
+                      <button type="button" className="btn btn-ghost" onClick={cancelEditSchedule}>Cancel</button>
+                      <button
+                        type="button" className="btn btn-primary" disabled={scheduleSaving}
+                        onClick={() => saveSchedule(config.accountId)}
+                      >
+                        Save schedule
+                      </button>
+                    </div>
+                  </>
+                ) : (
+                  <div className="cadence-summary">
+                    <span className="muted">{cadenceSummary(config)}</span>
+                    <button
+                      type="button" className="btn btn-ghost"
+                      aria-label={`Change ${config.accountName} pay schedule`}
+                      ref={(el) => {
+                        if (el) triggerRefs.current.set(config.accountId, el);
+                        else triggerRefs.current.delete(config.accountId);
+                      }}
+                      onClick={() => startEditSchedule(config)}
+                    >
+                      Change…
+                    </button>
+                  </div>
+                )}
+              </React.Fragment>
+            ))
           )}
+          {scheduleError && <p className="form-error" role="alert">{scheduleError}</p>}
+          {scheduleMessage && <p className="form-ok" role="status">{scheduleMessage}</p>}
         </section>
 
         {error && <p className="form-error" role="alert">{error}</p>}

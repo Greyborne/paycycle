@@ -53,8 +53,8 @@ router.post('/', async (req, res, next) => {
 
     await ensureMaterialized(req.budget.id, cfg);
     const { rows: period } = await q(
-      'SELECT id, closed_at FROM pay_periods WHERE budget_id = $1 AND start_date <= $2 AND end_date >= $2 ORDER BY start_date DESC LIMIT 1',
-      [req.budget.id, date]
+      'SELECT id, closed_at FROM pay_periods WHERE budget_id = $1 AND account_id = $3 AND start_date <= $2 AND end_date >= $2 ORDER BY start_date DESC LIMIT 1',
+      [req.budget.id, date, accountId]
     );
     if (!period.length) bad('Transactions can only be added to current or past pay periods');
     if (period[0].closed_at) bad('That date falls in a closed pay period — reopen it to add transactions');

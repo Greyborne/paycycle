@@ -94,11 +94,24 @@ router.get('/summary', async (req, res, next) => {
     // before the first recorded period read as reconciled (cleared = planned,
     // consistent with pre-history period columns); future months are planned
     // only. Category valid-from/until dates and effective-dated amounts apply.
-    const cfg = await getConfig(req.budget.id);
+    // Cadence-dependent period walk below (periodContaining/periodAfter):
+    // when scoped to one account it must use THAT account's config, not the
+    // default's — otherwise the fill-in periods for months without a
+    // recorded row would be walked on the wrong cadence (migration 013:
+    // each account has its own cfg).
+    const cfg = scoped ? await getConfig(req.budget.id, accountId) : await getConfig(req.budget.id);
     if (cfg) {
+      // Real periods must be scoped the same way cfg is (migration 013: each
+      // account has its own periods). When scoped, restrict to this
+      // account's rows so overlapsReal/firstRealStart reflect only its own
+      // history; unscoped (household roll-up) intentionally keeps walking
+      // every account's periods together with a single cfg — cadences can
+      // legitimately differ across accounts once periods are per-account,
+      // so this is a known simplification for the household view, not a bug
+      // to "fix" here.
       const { rows: realPeriods } = await q(
-        'SELECT start_date, end_date FROM pay_periods WHERE budget_id = $1 ORDER BY start_date',
-        [req.budget.id]
+        `SELECT start_date, end_date FROM pay_periods WHERE budget_id = $1${scoped ? ' AND account_id = $2' : ''} ORDER BY start_date`,
+        scoped ? [req.budget.id, accountId] : [req.budget.id]
       );
       let templates = (await loadTemplates(req.budget.id)).filter((t) => t.category_type !== 'tag');
       if (scoped) templates = templates.filter((t) => (t.account_id ?? defaultId) === accountId);
@@ -138,7 +151,18 @@ router.get('/summary', async (req, res, next) => {
 });
 
 function csvEscape(v) {
-  const s = v === null || v === undefined ? '' : String(v);
+  let s = v === null || v === undefined ? '' : String(v);
+  // Neutralize formula/DDE injection (CWE-1236): a field opened by
+  // Excel/Sheets/LibreOffice is interpreted as a formula if it starts with
+  // =, +, -, @, tab, or CR. Prefixing a single quote forces it to be read
+  // as text. Skip this for well-formed plain numbers (e.g. "-12.34") so
+  // legitimate negative amounts aren't turned into text cells — a bare
+  // numeric string can't carry a formula/command payload regardless of a
+  // leading '-'.
+  const isPlainNumber = /^-?\d+(\.\d+)?$/.test(s);
+  if (!isPlainNumber && /^[=+\-@\t\r]/.test(s)) {
+    s = `'${s}`;
+  }
   return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
 }
 
@@ -170,20 +194,51 @@ router.get('/export/transactions.csv', async (req, res, next) => {
 
 // One row per recorded (materialized) period with its totals and running
 // balances — the closest thing to exporting the original spreadsheet.
+// Periods are per-account (migration 013), so this is always exported one
+// account at a time, each walked with its own cadence config: either the
+// single account named by ?account=, or (unscoped) every non-archived
+// base-currency account of the budget, each in its own scoped projection —
+// otherwise interleaved period rows from different accounts would collide on
+// date and their running balances would be meaningless.
 router.get('/export/periods.csv', async (req, res, next) => {
   try {
-    const cfg = await getConfig(req.budget.id);
-    if (!cfg) bad('Complete setup first');
-    const projection = await buildProjection(req.budget, cfg, { months: 1 });
-    const rows = projection.entries.filter((e) => e.materialized).map((e) => [
-      e.start, e.end,
-      (e.plannedIncome / 100).toFixed(2), (e.clearedIncome / 100).toFixed(2),
-      (e.plannedExpenses / 100).toFixed(2), (e.clearedExpenses / 100).toFixed(2),
-      (e.miscIncome / 100).toFixed(2), (e.miscExpenses / 100).toFixed(2),
-      (e.lossGain / 100).toFixed(2), (e.estBalance / 100).toFixed(2),
-    ]);
+    const scoped = req.query.account !== undefined && req.query.account !== '';
+    let targets;
+    if (scoped) {
+      const accountId = await resolveAccountId(req.budget.id, req.query.account);
+      const { rows } = await q('SELECT id, name FROM accounts WHERE id = $1', [accountId]);
+      targets = rows;
+    } else {
+      const { rows } = await q(
+        `SELECT id, name FROM accounts
+         WHERE budget_id = $1 AND currency IS NULL AND NOT archived
+         ORDER BY sort_order, id`,
+        [req.budget.id]
+      );
+      targets = rows;
+    }
+
+    if (!targets.length) bad('Complete setup first');
+    let anyConfigured = false;
+    const rows = [];
+    for (const account of targets) {
+      const acctCfg = await getConfig(req.budget.id, account.id);
+      if (!acctCfg) continue;
+      anyConfigured = true;
+      const projection = await buildProjection(req.budget, acctCfg, { months: 1, accountId: account.id });
+      for (const e of projection.entries.filter((e) => e.materialized)) {
+        rows.push([
+          account.name, e.start, e.end,
+          (e.plannedIncome / 100).toFixed(2), (e.clearedIncome / 100).toFixed(2),
+          (e.plannedExpenses / 100).toFixed(2), (e.clearedExpenses / 100).toFixed(2),
+          (e.miscIncome / 100).toFixed(2), (e.miscExpenses / 100).toFixed(2),
+          (e.lossGain / 100).toFixed(2), (e.estBalance / 100).toFixed(2),
+        ]);
+      }
+    }
+    if (!anyConfigured) bad('Complete setup first');
     sendCsv(res, 'paycycle-periods.csv',
-      ['period_start', 'period_end', 'planned_income', 'cleared_income', 'planned_expenses',
+      ['account', 'period_start', 'period_end', 'planned_income', 'cleared_income', 'planned_expenses',
        'cleared_expenses', 'misc_income', 'misc_expenses', 'loss_gain', 'estimated_balance'],
       rows);
   } catch (err) {

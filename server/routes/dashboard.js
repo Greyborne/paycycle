@@ -17,9 +17,10 @@ router.get('/', async (req, res, next) => {
     if (!cfg || !req.budget.onboarding_complete) bad('Complete setup first');
     const months = Math.min(Math.max(parseInt(req.query.months, 10) || 24, 1), 60);
 
-    await ensureMaterialized(req.budget.id, cfg);
+    await ensureMaterialized(req.budget.id);
     const accountId = await resolveAccountId(req.budget.id, req.query.account);
-    const projection = await buildProjection(req.budget, cfg, { months, accountId });
+    const acctCfg = await getConfig(req.budget.id, accountId);
+    const projection = await buildProjection(req.budget, acctCfg, { months, accountId });
     const accounts = await accountBalances(req.budget.id);
     const netWorthCents = accounts
       .filter((a) => !a.currency)
