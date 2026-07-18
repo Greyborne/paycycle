@@ -191,7 +191,7 @@ router.post('/:start/close', async (req, res, next) => {
       }
       await client.query('COMMIT');
     } catch (err) {
-      await client.query('ROLLBACK');
+      await client.query('ROLLBACK').catch(() => {});
       throw err;
     } finally {
       client.release();
@@ -262,39 +262,52 @@ router.post('/:start/reopen', async (req, res, next) => {
     if (!lifecycle.latestClosedStart || start !== lifecycle.latestClosedStart) {
       bad('Only the most recently closed period can be reopened');
     }
-    const { rows: periodRow } = await q(
-      'SELECT * FROM pay_periods WHERE budget_id = $1 AND start_date = $2 AND account_id = $3',
-      [budget.id, start, accountId]
-    );
     // Undo what close-out did: carried items come back (and out of the next
     // period), removed items come back, the close-out adjustment line goes
     // away. Explicit "mark cleared" choices stand.
-    const log = periodRow[0]?.closed_snapshot?.resolutions ?? [];
-    for (const entry of [...log].reverse()) {
-      if (entry.action === 'carry') {
-        await q(
-          `UPDATE line_items SET planned_amount_cents = GREATEST(planned_amount_cents - $1, 0)
-           WHERE pay_period_id = $2 AND category_template_id = $3`,
-          [entry.item.plannedAmountCents, entry.targetPeriodId, entry.item.categoryTemplateId]
-        );
+    let log;
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      const { rows: periodRow } = await client.query(
+        'SELECT * FROM pay_periods WHERE budget_id = $1 AND start_date = $2 AND account_id = $3 FOR UPDATE',
+        [budget.id, start, accountId]
+      );
+      if (!periodRow.length) bad('The current period is not recorded yet');
+      if (!periodRow[0].closed_at) bad('This period is not closed');
+      log = periodRow[0].closed_snapshot?.resolutions ?? [];
+      for (const entry of [...log].reverse()) {
+        if (entry.action === 'carry') {
+          await client.query(
+            `UPDATE line_items SET planned_amount_cents = GREATEST(planned_amount_cents - $1, 0)
+             WHERE pay_period_id = $2 AND category_template_id = $3`,
+            [entry.item.plannedAmountCents, entry.targetPeriodId, entry.item.categoryTemplateId]
+          );
+        }
+        if (entry.action === 'carry' || entry.action === 'remove') {
+          await client.query(
+            `INSERT INTO line_items (pay_period_id, category_template_id, planned_amount_cents, account_id)
+             VALUES ($1, $2, $3, $4)
+             ON CONFLICT (pay_period_id, category_template_id)
+             DO UPDATE SET planned_amount_cents = EXCLUDED.planned_amount_cents, cleared = FALSE, cleared_date = NULL`,
+            [periodRow[0].id, entry.item.categoryTemplateId, entry.item.plannedAmountCents, entry.item.accountId]
+          );
+        }
+        if (entry.action === 'adjust') {
+          await client.query('DELETE FROM line_items WHERE id = $1', [entry.itemId]);
+        }
       }
-      if (entry.action === 'carry' || entry.action === 'remove') {
-        await q(
-          `INSERT INTO line_items (pay_period_id, category_template_id, planned_amount_cents, account_id)
-           VALUES ($1, $2, $3, $4)
-           ON CONFLICT (pay_period_id, category_template_id)
-           DO UPDATE SET planned_amount_cents = EXCLUDED.planned_amount_cents, cleared = FALSE, cleared_date = NULL`,
-          [periodRow[0].id, entry.item.categoryTemplateId, entry.item.plannedAmountCents, entry.item.accountId]
-        );
-      }
-      if (entry.action === 'adjust') {
-        await q('DELETE FROM line_items WHERE id = $1', [entry.itemId]);
-      }
+      await client.query(
+        'UPDATE pay_periods SET closed_at = NULL, closed_snapshot = NULL WHERE budget_id = $1 AND start_date = $2 AND account_id = $3',
+        [budget.id, start, accountId]
+      );
+      await client.query('COMMIT');
+    } catch (err) {
+      await client.query('ROLLBACK').catch(() => {});
+      throw err;
+    } finally {
+      client.release();
     }
-    await q(
-      'UPDATE pay_periods SET closed_at = NULL, closed_snapshot = NULL WHERE budget_id = $1 AND start_date = $2 AND account_id = $3',
-      [budget.id, start, accountId]
-    );
     res.json({ ok: true, restored: log.filter((e) => e.action !== 'clear').length });
   } catch (err) {
     next(err);
@@ -356,7 +369,7 @@ router.patch('/line-items/:id', async (req, res, next) => {
         const { rows: updated } = await q('SELECT * FROM line_items WHERE id = $1', [id]);
         return res.json({ lineItem: updated[0], scope: 'forward', periodsUpdated: touched });
       } catch (err) {
-        await client.query('ROLLBACK');
+        await client.query('ROLLBACK').catch(() => {});
         throw err;
       } finally {
         client.release();
@@ -420,7 +433,7 @@ router.post('/:start/line-items', async (req, res, next) => {
         await setAmountGoingForward(client, budget.id, cfg, categoryTemplateId, planned, period[0].start_date);
         await client.query('COMMIT');
       } catch (err) {
-        await client.query('ROLLBACK');
+        await client.query('ROLLBACK').catch(() => {});
         throw err;
       } finally {
         client.release();
