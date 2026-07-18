@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { pool, q } from '../db.js';
-import { bad, requireCents, requireDate } from '../validation.js';
+import { bad, requireCents, requireDate, requireId } from '../validation.js';
 import { getConfig, loadTemplates, effectiveAmount, ensureMaterialized } from '../services/budget.js';
 import { periodContaining, todayISO } from '../services/schedule.js';
 
@@ -125,7 +125,7 @@ router.post('/', async (req, res, next) => {
 
 router.patch('/:id', async (req, res, next) => {
   try {
-    const id = Number(req.params.id);
+    const id = requireId(req.params.id, 'category');
     const { rows: existing } = await q(
       'SELECT * FROM category_templates WHERE id = $1 AND budget_id = $2', [id, req.budget.id]
     );
@@ -198,7 +198,7 @@ router.patch('/:id', async (req, res, next) => {
 // Same-date entries overwrite (correction); different dates append history.
 router.post('/:id/amounts', async (req, res, next) => {
   try {
-    const id = Number(req.params.id);
+    const id = requireId(req.params.id, 'category');
     const { rows: existing } = await q(
       'SELECT id FROM category_templates WHERE id = $1 AND budget_id = $2', [id, req.budget.id]
     );
@@ -220,7 +220,8 @@ router.post('/:id/amounts', async (req, res, next) => {
 
 router.delete('/:id/amounts/:historyId', async (req, res, next) => {
   try {
-    const id = Number(req.params.id);
+    const id = requireId(req.params.id, 'category');
+    const historyId = requireId(req.params.historyId, 'amount entry');
     const { rows: count } = await q(
       `SELECT COUNT(*) AS n FROM category_amount_history h
        JOIN category_templates t ON t.id = h.category_template_id
@@ -231,7 +232,7 @@ router.delete('/:id/amounts/:historyId', async (req, res, next) => {
     const { rowCount } = await q(
       `DELETE FROM category_amount_history h USING category_templates t
        WHERE h.id = $1 AND h.category_template_id = t.id AND t.id = $2 AND t.budget_id = $3`,
-      [Number(req.params.historyId), id, req.budget.id]
+      [historyId, id, req.budget.id]
     );
     if (!rowCount) return res.status(404).json({ error: 'Amount entry not found' });
     res.status(204).end();

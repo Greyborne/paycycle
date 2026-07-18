@@ -2,7 +2,7 @@ import { Router } from 'express';
 import { q } from '../db.js';
 import { decryptSecret, encryptSecret } from '../services/secrets.js';
 import { config } from '../config.js';
-import { bad } from '../validation.js';
+import { bad, requireId } from '../validation.js';
 import { plaidEnabled, plaidClient, syncBudget } from '../services/plaid.js';
 
 const router = Router();
@@ -101,7 +101,7 @@ router.post('/exchange', async (req, res, next) => {
 router.patch('/links/:id', async (req, res, next) => {
   try {
     requirePlaid();
-    const id = Number(req.params.id);
+    const id = requireId(req.params.id, 'bank account');
     const { rows: link } = await q(
       `SELECT l.id FROM plaid_account_links l JOIN plaid_items i ON i.id = l.plaid_item_id
        WHERE l.id = $1 AND i.budget_id = $2`,
@@ -136,9 +136,10 @@ router.post('/sync', async (req, res, next) => {
 router.delete('/items/:id', async (req, res, next) => {
   try {
     requirePlaid();
+    const id = requireId(req.params.id, 'bank connection');
     const { rows } = await q(
       'SELECT * FROM plaid_items WHERE id = $1 AND budget_id = $2',
-      [Number(req.params.id), req.budget.id]
+      [id, req.budget.id]
     );
     if (!rows.length) return res.status(404).json({ error: 'Bank connection not found' });
     try {

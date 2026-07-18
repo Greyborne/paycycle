@@ -1,7 +1,7 @@
 import crypto from 'node:crypto';
 import { Router } from 'express';
 import { pool, q } from '../db.js';
-import { bad, HttpError } from '../validation.js';
+import { bad, HttpError, requireId } from '../validation.js';
 import { createSoloBudget } from '../services/budget.js';
 
 const router = Router();
@@ -73,9 +73,10 @@ router.post('/invites', async (req, res, next) => {
 router.delete('/invites/:id', async (req, res, next) => {
   try {
     requireOwner(req);
+    const id = requireId(req.params.id, 'invite');
     const { rowCount } = await q(
       'DELETE FROM budget_invites WHERE id = $1 AND budget_id = $2',
-      [Number(req.params.id), req.budget.id]
+      [id, req.budget.id]
     );
     if (!rowCount) return res.status(404).json({ error: 'Invite not found' });
     res.status(204).end();
@@ -172,7 +173,7 @@ router.delete('/members/:userId', async (req, res, next) => {
   const client = await pool.connect();
   try {
     requireOwner(req);
-    const targetId = Number(req.params.userId);
+    const targetId = requireId(req.params.userId, 'member');
     if (targetId === req.userId) bad('Use "leave" to remove yourself');
     const { rows } = await q(
       'SELECT * FROM budget_members WHERE budget_id = $1 AND user_id = $2',

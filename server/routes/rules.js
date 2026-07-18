@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { q } from '../db.js';
-import { bad, requireCents } from '../validation.js';
+import { bad, requireCents, requireId } from '../validation.js';
 import { loadRules, ruleMatches } from '../services/rules.js';
 
 const router = Router();
@@ -94,9 +94,10 @@ router.post('/', async (req, res, next) => {
 
 router.patch('/:id', async (req, res, next) => {
   try {
+    const id = requireId(req.params.id, 'rule');
     const { rows: existing } = await q(
       'SELECT * FROM category_rules WHERE id = $1 AND budget_id = $2',
-      [Number(req.params.id), req.budget.id]
+      [id, req.budget.id]
     );
     if (!existing.length) return res.status(404).json({ error: 'Rule not found' });
     const body = req.body || {};
@@ -123,9 +124,10 @@ router.patch('/:id', async (req, res, next) => {
 
 router.delete('/:id', async (req, res, next) => {
   try {
+    const id = requireId(req.params.id, 'rule');
     const { rowCount } = await q(
       'DELETE FROM category_rules WHERE id = $1 AND budget_id = $2',
-      [Number(req.params.id), req.budget.id]
+      [id, req.budget.id]
     );
     if (!rowCount) return res.status(404).json({ error: 'Rule not found' });
     res.status(204).end();
