@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { pool, q } from '../db.js';
-import { bad, requireCents, requireDate } from '../validation.js';
+import { bad, requireCents, requireDate, requireId } from '../validation.js';
 import {
   buildProjection, clearedBalancesForPeriod, ensureMaterialized, getConfig, getDefaultAccountId,
   getLifecycle, getPeriodDetail, materializePeriodAfter, resolveAccountId, setAmountGoingForward,
@@ -317,7 +317,7 @@ router.post('/:start/reopen', async (req, res, next) => {
 // Edit a line item in a materialized period: planned amount and/or cleared.
 router.patch('/line-items/:id', async (req, res, next) => {
   try {
-    const id = Number(req.params.id);
+    const id = requireId(req.params.id, 'line item');
     const { rows } = await q(
       `SELECT li.*, pp.closed_at, pp.start_date AS period_start FROM line_items li
        JOIN pay_periods pp ON pp.id = li.pay_period_id

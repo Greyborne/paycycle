@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { pool, q } from '../db.js';
-import { bad, parseCadenceConfig, requireCents, requireCurrency, requireDate } from '../validation.js';
+import { bad, parseCadenceConfig, requireCents, requireCurrency, requireDate, requireId } from '../validation.js';
 import { accountBalances, getConfig, getDefaultAccountId } from '../services/budget.js';
 import { periodContaining, todayISO } from '../services/schedule.js';
 
@@ -164,7 +164,7 @@ router.post('/', async (req, res, next) => {
 router.patch('/:id', async (req, res, next) => {
   const client = await pool.connect();
   try {
-    const id = Number(req.params.id);
+    const id = requireId(req.params.id, 'account');
     const { rows: existing } = await q(
       'SELECT * FROM accounts WHERE id = $1 AND budget_id = $2', [id, req.budget.id]
     );

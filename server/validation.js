@@ -16,6 +16,15 @@ export function requireCents(value, label) {
   return value;
 }
 
+// Validate a route-param id: must be a positive int32. Non-numeric strings,
+// NaN, Infinity, non-integers, zero, negatives, and anything above
+// PostgreSQL's int32 max all become a clean 400 rather than a DB-level 500.
+export function requireId(raw, label) {
+  const value = Number(raw);
+  if (!Number.isInteger(value) || value <= 0 || value > 2147483647) bad(`${label} must be a valid id`);
+  return value;
+}
+
 export function requireDate(value, label) {
   if (!isValidISO(value)) bad(`${label} must be a valid YYYY-MM-DD date`);
   return value;

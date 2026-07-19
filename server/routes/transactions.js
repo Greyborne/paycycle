@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { q } from '../db.js';
-import { bad, requireCents, requireDate } from '../validation.js';
+import { bad, requireCents, requireDate, requireId } from '../validation.js';
 import {
   getConfig, ensureMaterialized, getDefaultAccountId, loadTemplates, driftFor,
   clearLineItemForTransaction,
@@ -72,11 +72,12 @@ router.post('/', async (req, res, next) => {
 
 router.delete('/:id', async (req, res, next) => {
   try {
+    const id = requireId(req.params.id, 'transaction');
     const { rows } = await q(
       `SELECT t.id, pp.closed_at FROM transactions t
        LEFT JOIN pay_periods pp ON pp.id = t.pay_period_id
        WHERE t.id = $1 AND t.budget_id = $2`,
-      [Number(req.params.id), req.budget.id]
+      [id, req.budget.id]
     );
     if (!rows.length) return res.status(404).json({ error: 'Transaction not found' });
     if (rows[0].closed_at) bad('This transaction is in a closed pay period — reopen it to make changes');

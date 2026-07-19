@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { q } from '../db.js';
-import { bad, parseCadenceConfig, requireCents, requireCurrency } from '../validation.js';
+import { bad, parseCadenceConfig, requireCents, requireCurrency, requireId } from '../validation.js';
 import { getBudget, getUser } from '../services/budget.js';
 import { emailEnabled } from '../services/mailer.js';
 import { publicUser } from './auth.js';
@@ -59,8 +59,7 @@ router.get('/', async (req, res, next) => {
 router.put('/schedule/:accountId', async (req, res, next) => {
   try {
     const budget = req.budget;
-    const accountId = Number(req.params.accountId);
-    if (!Number.isInteger(accountId) || accountId <= 0 || accountId > 2147483647) bad('Unknown account');
+    const accountId = requireId(req.params.accountId, 'account');
 
     const { rows: acctRows } = await q(
       'SELECT id FROM accounts WHERE id = $1 AND budget_id = $2 AND NOT archived AND currency IS NULL',
