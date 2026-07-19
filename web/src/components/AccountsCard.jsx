@@ -15,6 +15,7 @@ function AccountRow({ account, currency, onPatch }) {
       <td>
         <input
           className="category-name" defaultValue={account.name} disabled={account.archived}
+          aria-label={`Name for ${account.name}`}
           onBlur={(e) => {
             const v = e.target.value.trim();
             if (v && v !== account.name) onPatch(account.id, { name: v });
@@ -29,6 +30,7 @@ function AccountRow({ account, currency, onPatch }) {
       <td>
         <select
           value={account.type} disabled={account.archived}
+          aria-label={`Type for ${account.name}`}
           onChange={(e) => onPatch(account.id, { type: e.target.value })}
         >
           {TYPES.map((t) => <option key={t} value={t}>{t}</option>)}
@@ -37,6 +39,7 @@ function AccountRow({ account, currency, onPatch }) {
       <td className="num">
         <input
           className="cell-input" type="text" inputMode="decimal" value={starting} disabled={account.archived}
+          aria-label={`Starting balance for ${account.name}`}
           onChange={(e) => setStarting(e.target.value)}
           onBlur={() => {
             const cents = parseMoney(starting);
@@ -52,6 +55,7 @@ function AccountRow({ account, currency, onPatch }) {
         <input
           type="date" defaultValue={account.startedOn ?? ''} disabled={account.archived}
           title="When tracking began — the starting balance is as of the day before, and new categories on this account default to it"
+          aria-label={`Tracking from for ${account.name}`}
           onChange={(e) => { if (e.target.value) onPatch(account.id, { startedOn: e.target.value }); }}
         />
       </td>
@@ -62,6 +66,7 @@ function AccountRow({ account, currency, onPatch }) {
           disabled={account.archived || Boolean(account.currency)}
           onChange={() => onPatch(account.id, { isDefault: true })}
           title={account.currency ? 'Foreign-currency accounts cannot be the default' : 'Default account for new items'}
+          aria-label={`Default for ${account.name}`}
         />
       </td>
       <td className="center">
@@ -146,7 +151,7 @@ export default function AccountsCard() {
         <thead>
           <tr>
             <th>Name</th><th>Type</th><th className="num">Starting balance</th><th>Tracking from</th>
-            <th className="num">Current balance</th><th className="center">Default</th><th />
+            <th className="num">Current balance</th><th className="center">Default</th><th><span className="sr-only">Actions</span></th>
           </tr>
         </thead>
         <tbody>
@@ -156,19 +161,21 @@ export default function AccountsCard() {
         </tbody>
       </table>
       <form className="quick-add" onSubmit={add}>
-        <input value={name} onChange={(e) => setName(e.target.value)} placeholder="New account name" required />
-        <select value={type} onChange={(e) => setType(e.target.value)}>
+        <input value={name} onChange={(e) => setName(e.target.value)} placeholder="New account name" aria-label="New account name" required />
+        <select value={type} onChange={(e) => setType(e.target.value)} aria-label="New account type">
           {TYPES.map((t) => <option key={t} value={t}>{t}</option>)}
         </select>
-        <input value={starting} onChange={(e) => setStarting(e.target.value)} inputMode="decimal" placeholder="Starting balance" />
+        <input value={starting} onChange={(e) => setStarting(e.target.value)} inputMode="decimal" placeholder="Starting balance" aria-label="Starting balance" />
         <input
           type="date" value={startedOn} onChange={(e) => setStartedOn(e.target.value)}
           title="Tracking start — defaults to the current pay period"
+          aria-label="Tracking from"
         />
         <input
           value={accountCurrency} onChange={(e) => setAccountCurrency(e.target.value.toUpperCase())}
           maxLength={3} placeholder={user.currency} style={{ width: '5.5rem' }}
           title="Currency (leave as household currency, or a different code for a tracked foreign-currency account)"
+          aria-label="Currency"
         />
         {!isForeign && (
           <>

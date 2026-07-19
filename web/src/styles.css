@@ -1041,3 +1041,17 @@ textarea { font-family: ui-monospace, monospace; font-size: 0.85rem; resize: ver
     border-bottom-left-radius: 0;
   }
 }
+
+/* Visually-hidden but screen-reader-accessible text. Renders nothing and
+   cannot affect layout, table column widths, or row heights. */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
