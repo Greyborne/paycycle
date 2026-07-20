@@ -15,6 +15,10 @@
 // budget-scoped table cascades from budgets), so runs never collide and
 // leave no residue.
 
+// This import must stay first: it throws before any connection/seed/query
+// work happens if DATABASE_URL doesn't look like a local/throwaway database.
+// See _env-guard.js for why.
+import './_env-guard.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { pool, q } from '../../db.js';
