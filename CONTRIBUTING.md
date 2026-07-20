@@ -40,6 +40,21 @@ npm run test:integration   # budget-engine tests against a real Postgres
 dev Postgres above works — run `npm run migrate` against it first). CI runs both
 suites; see `.github/workflows/ci.yml`.
 
+`server/test/integration/_env-guard.js` refuses to run against anything that
+isn't recognizably a throwaway database — these tests seed rows and then
+hard-DELETE them. If you're working against the project's `docker compose`
+stack (where Postgres isn't published to the host), don't hand-roll a
+throwaway database: run
+
+```bash
+npm run test:integration:ephemeral
+```
+
+This creates a uniquely-named, disposable database against the running `db`
+compose service, migrates it, runs the integration suite, and drops the
+database afterwards — even if the tests fail or the run is interrupted. See
+`scripts/test-integration-ephemeral.sh` for details.
+
 Please add tests for any change to the pay-period date math or the projection
 engine — those are the parts users trust with their money.
 
