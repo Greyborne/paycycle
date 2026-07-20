@@ -6,3 +6,4 @@ web/dist/
 .DS_Store
 Working/
 .claude/settings.local.json
+.claude/worktrees/
