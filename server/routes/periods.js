@@ -65,8 +65,8 @@ router.get('/:start', async (req, res, next) => {
 // The state a close-out has to resolve before the current period can close:
 // uncleared planned items, and the reconciliation discrepancy that would
 // remain even if every one of them were marked cleared.
-async function unclearedItems(periodId) {
-  const { rows } = await q(
+async function unclearedItems(periodId, dbc = { query: q }) {
+  const { rows } = await dbc.query(
     `SELECT li.id, li.planned_amount_cents, ct.name, ct.type
      FROM line_items li JOIN category_templates ct ON ct.id = li.category_template_id
      WHERE li.pay_period_id = $1 AND NOT li.cleared AND li.planned_amount_cents <> 0
@@ -132,23 +132,42 @@ router.post('/:start/close', async (req, res, next) => {
     const body = req.body || {};
     const resolutions = body.resolutions || {};
 
-    const uncleared = await unclearedItems(periodRow.id);
-    for (const item of uncleared) {
-      if (!['clear', 'carry', 'remove'].includes(resolutions[item.id])) {
-        bad(`"${item.name}" has not cleared — choose whether to clear, carry, or remove it`);
-      }
-    }
-
     // The carry target (and the next current period) must exist as a row.
+    // materializePeriodAfter runs its own self-contained transaction and its
+    // insert is an idempotent upsert (ON CONFLICT ... DO UPDATE SET end_date
+    // = end_date), so it is safe to run ahead of the close transaction below:
+    // if that transaction later rolls back, this leaves at most a harmless,
+    // already-correct next-period row behind (no financial data, nothing to
+    // undo) rather than a genuine orphan.
     const nextRow = await materializePeriodAfter(budget.id, accountId, cfg, {
       start: periodRow.start_date, end: periodRow.end_date,
     });
 
-    // Everything done here is recorded so a reopen can undo it.
+    // Everything done here is recorded so a reopen can undo it. Resolutions,
+    // the discrepancy adjustment, and the closed_at/closed_snapshot write all
+    // happen on one client, in one transaction, so a crash partway through
+    // leaves nothing behind for reopen to have to (fail to) undo.
     const resolutionLog = [];
     const client = await pool.connect();
+    let snapshot;
     try {
       await client.query('BEGIN');
+      // Lock the period row before reading anything we're about to act on —
+      // a concurrent close on the same period must serialize behind this one
+      // and then see closed_at already set, rather than racing on a stale
+      // read of the uncleared items.
+      const { rows: locked } = await client.query(
+        'SELECT * FROM pay_periods WHERE id = $1 FOR UPDATE', [periodRow.id]
+      );
+      if (!locked.length || locked[0].closed_at) bad('This period is already closed');
+
+      const uncleared = await unclearedItems(periodRow.id, client);
+      for (const item of uncleared) {
+        if (!['clear', 'carry', 'remove'].includes(resolutions[item.id])) {
+          bad(`"${item.name}" has not cleared — choose whether to clear, carry, or remove it`);
+        }
+      }
+
       for (const item of uncleared) {
         const action = resolutions[item.id];
         if (action === 'clear') {
@@ -189,6 +208,57 @@ router.post('/:start/close', async (req, res, next) => {
           });
         }
       }
+
+      // With every planned item resolved, any remaining est-vs-cleared gap is
+      // drift inherited from history. It needs an explicit decision. Passing
+      // `client` as dbc here is the whole point: it makes this projection
+      // observe the resolution writes above, which are still uncommitted on
+      // every other connection.
+      let projection = await buildProjection(budget, cfg, { months: 12, accountId, dbc: client });
+      let entry = projection.entries.find((e) => e.start === start);
+      const discrepancy = (entry?.estBalance ?? 0) - (entry?.clearedBalance ?? 0);
+      if (discrepancy !== 0) {
+        if (!['adjust', 'accept'].includes(body.discrepancy)) {
+          bad('The cleared balance does not reconcile with the estimate — choose to log an adjustment or accept the mismatch');
+        }
+        if (body.discrepancy === 'adjust') {
+          // An uncleared adjustment line shifts the estimate (not the cleared
+          // side) by exactly the drift, so estimates match reality from here
+          // on. The template is archived so it never seeds future periods.
+          const type = discrepancy > 0 ? 'expense' : 'income';
+          const { rows: tpl } = await client.query(
+            `SELECT id FROM category_templates WHERE budget_id = $1 AND name = 'Close-out adjustment' AND type = $2`,
+            [budget.id, type]
+          );
+          let templateId = tpl[0]?.id;
+          if (!templateId) {
+            const { rows: created } = await client.query(
+              `INSERT INTO category_templates (budget_id, name, type, recurrence, sort_order, archived)
+               VALUES ($1, 'Close-out adjustment', $2, 'every_period', 9999, TRUE) RETURNING id`,
+              [budget.id, type]
+            );
+            templateId = created[0].id;
+          }
+          const { rows: adj } = await client.query(
+            `INSERT INTO line_items (pay_period_id, category_template_id, planned_amount_cents, account_id)
+             VALUES ($1, $2, $3, $4)
+             ON CONFLICT (pay_period_id, category_template_id)
+             DO UPDATE SET planned_amount_cents = line_items.planned_amount_cents + EXCLUDED.planned_amount_cents
+             RETURNING id`,
+            [periodRow.id, templateId, Math.abs(discrepancy), accountId]
+          );
+          resolutionLog.push({ action: 'adjust', itemId: adj[0].id });
+        }
+      }
+
+      snapshot = {
+        ...await clearedBalancesForPeriod(budget, cfg, start, accountId, client),
+        resolutions: resolutionLog,
+      };
+      await client.query(
+        'UPDATE pay_periods SET closed_at = now(), closed_snapshot = $1 WHERE id = $2',
+        [JSON.stringify(snapshot), periodRow.id]
+      );
       await client.query('COMMIT');
     } catch (err) {
       await client.query('ROLLBACK').catch(() => {});
@@ -196,54 +266,6 @@ router.post('/:start/close', async (req, res, next) => {
     } finally {
       client.release();
     }
-
-    // With every planned item resolved, any remaining est-vs-cleared gap is
-    // drift inherited from history. It needs an explicit decision.
-    let projection = await buildProjection(budget, cfg, { months: 12, accountId });
-    let entry = projection.entries.find((e) => e.start === start);
-    const discrepancy = (entry?.estBalance ?? 0) - (entry?.clearedBalance ?? 0);
-    if (discrepancy !== 0) {
-      if (!['adjust', 'accept'].includes(body.discrepancy)) {
-        bad('The cleared balance does not reconcile with the estimate — choose to log an adjustment or accept the mismatch');
-      }
-      if (body.discrepancy === 'adjust') {
-        // An uncleared adjustment line shifts the estimate (not the cleared
-        // side) by exactly the drift, so estimates match reality from here
-        // on. The template is archived so it never seeds future periods.
-        const type = discrepancy > 0 ? 'expense' : 'income';
-        const { rows: tpl } = await q(
-          `SELECT id FROM category_templates WHERE budget_id = $1 AND name = 'Close-out adjustment' AND type = $2`,
-          [budget.id, type]
-        );
-        let templateId = tpl[0]?.id;
-        if (!templateId) {
-          const { rows: created } = await q(
-            `INSERT INTO category_templates (budget_id, name, type, recurrence, sort_order, archived)
-             VALUES ($1, 'Close-out adjustment', $2, 'every_period', 9999, TRUE) RETURNING id`,
-            [budget.id, type]
-          );
-          templateId = created[0].id;
-        }
-        const { rows: adj } = await q(
-          `INSERT INTO line_items (pay_period_id, category_template_id, planned_amount_cents, account_id)
-           VALUES ($1, $2, $3, $4)
-           ON CONFLICT (pay_period_id, category_template_id)
-           DO UPDATE SET planned_amount_cents = line_items.planned_amount_cents + EXCLUDED.planned_amount_cents
-           RETURNING id`,
-          [periodRow.id, templateId, Math.abs(discrepancy), accountId]
-        );
-        resolutionLog.push({ action: 'adjust', itemId: adj[0].id });
-      }
-    }
-
-    const snapshot = {
-      ...await clearedBalancesForPeriod(budget, cfg, start, accountId),
-      resolutions: resolutionLog,
-    };
-    await q(
-      'UPDATE pay_periods SET closed_at = now(), closed_snapshot = $1 WHERE id = $2',
-      [JSON.stringify(snapshot), periodRow.id]
-    );
     res.json({ ok: true, nextStart: nextRow.start_date, snapshot });
   } catch (err) {
     next(err);

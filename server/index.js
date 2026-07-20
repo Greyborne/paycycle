@@ -2,6 +2,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import express from 'express';
 import cookieParser from 'cookie-parser';
+import rateLimit from 'express-rate-limit';
 import { config } from './config.js';
 import { pool } from './db.js';
 import { waitForDb, migrate } from './migrate.js';
@@ -39,7 +40,53 @@ app.get('/healthz', async (req, res) => {
   }
 });
 
-const budgetScoped = [requireAuth, attachBudget(getMembership)];
+// Blast-radius cap for the authenticated financial API, distinct in purpose
+// (and in key) from authRoutes' authLimiter. That one guards credential
+// endpoints against brute force and is keyed by IP. This one guards routes
+// that are already behind requireAuth - the risk here isn't a credential
+// attacker, it's cost: buildProjection (services/budget.js) walks 12-24
+// months of periods per call and the reports year-walk (routes/reports.js)
+// loops up to 400 iterations, so a runaway retry loop or a buggy frontend
+// effect on one account can generate real database load.
+//
+// Keyed by the authenticated user id, NOT by IP. These routes only ever run
+// after requireAuth, so req.userId (set there - see auth.js) is always
+// populated in practice; the IP fallback below only matters for a
+// theoretical request that reaches this middleware without it. Keying by IP
+// instead would put every member of a household, and everyone behind a
+// shared NAT or corporate egress, in one shared bucket - one person's
+// dashboard-refresh habit would throttle their partner. Per-user keying
+// means the cap actually tracks the client generating the load.
+//
+// The ceiling is intentionally generous and NOT configurable via env var
+// (boss decision: every deployment gets this protection with no config
+// surface to document or get wrong). 300 requests / 15 min is roughly 20x a
+// full dashboard load's worth of calls (dashboard + periods + accounts list
+// typically fire well under 15 requests together) - normal use, including
+// switching between periods/reports/accounts repeatedly, should never come
+// close to it. It exists to stop a loop, not to throttle a person.
+//
+// Storage note: this uses express-rate-limit's default in-memory store,
+// which is per-process. That's correct for the current single-container
+// deployment (the cap applies per instance), but it means the ceiling is NOT
+// shared across replicas if this is ever scaled horizontally - revisit with
+// a shared store (e.g. Redis) if that happens.
+const financialLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 300,
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req) => (req.userId ? `user:${req.userId}` : req.ip),
+  message: { error: 'Too many requests, please slow down and try again shortly' },
+});
+
+// /api/import and /api/plaid deliberately get no separate allowance or
+// exemption. A CSV import is one POST regardless of row count (up to 2000
+// rows validated server-side in routes/import.js) - it doesn't burst into
+// many requests - and a Plaid link/sync flow is a handful of calls. Neither
+// pattern comes close to the shared ceiling above, so a bespoke bucket would
+// add complexity without addressing a real burst risk.
+const budgetScoped = [requireAuth, financialLimiter, attachBudget(getMembership)];
 
 app.use('/api/auth', authRoutes);
 app.use('/api/setup', budgetScoped, setupRoutes);

@@ -64,18 +64,18 @@ export async function getAccounts(budgetId) {
 
 // The default account (always base-currency), self-healing if a household
 // somehow lacks one.
-export async function getDefaultAccountId(budgetId) {
-  const { rows } = await q(
+export async function getDefaultAccountId(budgetId, dbc = { query: q }) {
+  const { rows } = await dbc.query(
     'SELECT id FROM accounts WHERE budget_id = $1 AND is_default AND NOT archived AND currency IS NULL',
     [budgetId]
   );
   if (rows.length) return rows[0].id;
-  const { rows: any } = await q(
+  const { rows: any } = await dbc.query(
     'SELECT id FROM accounts WHERE budget_id = $1 AND currency IS NULL ORDER BY archived, sort_order, id LIMIT 1',
     [budgetId]
   );
   if (any.length) return any[0].id;
-  const { rows: created } = await q(
+  const { rows: created } = await dbc.query(
     "INSERT INTO accounts (budget_id, name, is_default) VALUES ($1, 'Primary account', TRUE) RETURNING id",
     [budgetId]
   );
@@ -119,16 +119,16 @@ export async function accountBalances(budgetId) {
   return rows.map((r) => ({ ...r, balance_cents: Number(r.balance_cents) }));
 }
 
-async function totalStartingBalance(budgetId) {
-  const { rows } = await q(
+async function totalStartingBalance(budgetId, dbc = { query: q }) {
+  const { rows } = await dbc.query(
     'SELECT COALESCE(SUM(starting_balance_cents), 0)::int AS total FROM accounts WHERE budget_id = $1 AND currency IS NULL',
     [budgetId]
   );
   return rows[0].total;
 }
 
-async function accountStartingBalance(budgetId, accountId) {
-  const { rows } = await q(
+async function accountStartingBalance(budgetId, accountId, dbc = { query: q }) {
+  const { rows } = await dbc.query(
     'SELECT starting_balance_cents FROM accounts WHERE budget_id = $1 AND id = $2',
     [budgetId, accountId]
   );
@@ -180,14 +180,14 @@ export async function getAccountConfigs(budgetId) {
 }
 
 // Templates with their amount history (ascending by effective date).
-export async function loadTemplates(budgetId, { includeArchived = false } = {}) {
-  const { rows: templates } = await q(
+export async function loadTemplates(budgetId, { includeArchived = false, dbc = { query: q } } = {}) {
+  const { rows: templates } = await dbc.query(
     `SELECT * FROM category_templates WHERE budget_id = $1 ${includeArchived ? '' : 'AND NOT archived'}
      ORDER BY type, sort_order, id`,
     [budgetId]
   );
   if (!templates.length) return [];
-  const { rows: history } = await q(
+  const { rows: history } = await dbc.query(
     `SELECT h.* FROM category_amount_history h
      JOIN category_templates t ON t.id = h.category_template_id
      WHERE t.budget_id = $1 ORDER BY h.effective_start_date`,
@@ -455,11 +455,11 @@ export async function ensureMaterialized(budgetId) {
 // returns every account's period rows for this budget_id — that now yields
 // multiple rows per date (one per account); reconciling that into a single
 // household view is Phase 5's problem, not this function's.
-async function materializedSummaries(budgetId, scope = null) {
+async function materializedSummaries(budgetId, scope = null, dbc = { query: q }) {
   const acctFilter = scope ? 'AND COALESCE(li.account_id, $2) = $3' : '';
   const periodAcctFilter = scope ? 'AND pp.account_id = $3' : '';
   const acctParams = scope ? [scope.defaultId, scope.accountId] : [];
-  const { rows: periods } = await q(
+  const { rows: periods } = await dbc.query(
     `SELECT pp.id, pp.start_date, pp.end_date,
             COALESCE(SUM(li.planned_amount_cents) FILTER (WHERE ct.type = 'expense'), 0)                  AS planned_expenses,
             COALESCE(SUM(li.planned_amount_cents) FILTER (WHERE ct.type = 'expense' AND li.cleared), 0)   AS cleared_expense_items,
@@ -483,7 +483,7 @@ async function materializedSummaries(budgetId, scope = null) {
   // "Misc" = uncategorized OR tagged: a tag category is just a label on a
   // one-off transaction, so it counts exactly like misc in the balance math
   // (only recurring categories represent line items clearing).
-  const { rows: txn } = await q(
+  const { rows: txn } = await dbc.query(
     `SELECT t.pay_period_id,
             COALESCE(SUM(t.amount_cents) FILTER (WHERE t.type = 'expense' AND (t.category_template_id IS NULL OR tct.category_type = 'tag')), 0) AS misc_expenses,
             COALESCE(SUM(t.amount_cents) FILTER (WHERE t.type = 'income' AND (t.category_template_id IS NULL OR tct.category_type = 'tag')), 0)  AS misc_income,
@@ -529,15 +529,15 @@ function virtualTotals(templates, period) {
 //
 // and accumulating the actual balance from cleared items and transactions in
 // real periods only.
-export async function buildProjection(budget, cfg, { months = 24, accountId = null } = {}) {
+export async function buildProjection(budget, cfg, { months = 24, accountId = null, dbc = { query: q } } = {}) {
   const today = todayISO();
   const horizon = addMonths(today, months);
   const scope = accountId
-    ? { accountId, defaultId: await getDefaultAccountId(budget.id) }
+    ? { accountId, defaultId: await getDefaultAccountId(budget.id, dbc) }
     : null;
-  const materialized = await materializedSummaries(budget.id, scope);
+  const materialized = await materializedSummaries(budget.id, scope, dbc);
   const matByStart = new Map(materialized.map((p) => [p.start_date, p]));
-  let templates = (await loadTemplates(budget.id)).filter((t) => t.category_type !== 'tag');
+  let templates = (await loadTemplates(budget.id, { dbc })).filter((t) => t.category_type !== 'tag');
   if (scope) templates = templates.filter((t) => (t.account_id ?? scope.defaultId) === scope.accountId);
 
   let period = materialized.length
@@ -546,8 +546,8 @@ export async function buildProjection(budget, cfg, { months = 24, accountId = nu
   // Both balance chains seed from the scoped account's starting balance, or
   // the household's combined starting balances when unscoped (net position).
   const startingBalance = scope
-    ? await accountStartingBalance(budget.id, scope.accountId)
-    : await totalStartingBalance(budget.id);
+    ? await accountStartingBalance(budget.id, scope.accountId, dbc)
+    : await totalStartingBalance(budget.id, dbc);
   let est = startingBalance;
   let actual = startingBalance;
   let actualAsOf = null;
@@ -702,8 +702,8 @@ export async function materializePeriodAfter(budgetId, accountId, cfg, period) {
 // close-out snapshot, scoped to a single account (migration 013 collapsed the
 // stored snapshot down to that account's own value; there is no more
 // per-period "accounts" map).
-export async function clearedBalancesForPeriod(budget, cfg, startDate, accountId) {
-  const scoped = await buildProjection(budget, cfg, { months: 12, accountId });
+export async function clearedBalancesForPeriod(budget, cfg, startDate, accountId, dbc = { query: q }) {
+  const scoped = await buildProjection(budget, cfg, { months: 12, accountId, dbc });
   return { total: scoped.entries.find((e) => e.start === startDate)?.clearedBalance ?? null };
 }
 

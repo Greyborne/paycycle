@@ -10,7 +10,8 @@
     "migrate": "node server/migrate.js",
     "build:web": "npm --prefix web run build",
     "test": "node --test 'server/test/*.test.js'",
-    "test:integration": "node --test 'server/test/integration/*.test.js'"
+    "test:integration": "node --test 'server/test/integration/*.test.js'",
+    "test:integration:ephemeral": "bash scripts/test-integration-ephemeral.sh"
   },
   "engines": {
     "node": ">=20"
