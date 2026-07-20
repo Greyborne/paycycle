@@ -2,7 +2,7 @@ import { Router } from 'express';
 import { q } from '../db.js';
 import { bad } from '../validation.js';
 import {
-  getConfig, getDefaultAccountId, buildProjection, resolveAccountId, loadTemplates, plannedForPeriod,
+  getConfig, getAccountConfigs, getDefaultAccountId, buildProjection, resolveAccountId, loadTemplates, plannedForPeriod,
 } from '../services/budget.js';
 import { periodAfter, periodContaining, todayISO } from '../services/schedule.js';
 
@@ -19,7 +19,11 @@ router.get('/summary', async (req, res, next) => {
     if (!year || year < 1900 || year > 3000) bad('year is required, e.g. ?year=2026');
     const scoped = req.query.account !== undefined && req.query.account !== '';
     const accountId = scoped ? await resolveAccountId(req.budget.id, req.query.account) : null;
-    const defaultId = scoped ? await getDefaultAccountId(req.budget.id) : null;
+    // Needed unconditionally now, not just when scoped: the unscoped fill-in
+    // loop below also attributes ownerless templates to the default account
+    // (the "t.account_id ?? defaultId" convention), since it now walks every
+    // eligible account separately rather than resolving one shared cfg.
+    const defaultId = await getDefaultAccountId(req.budget.id);
     const scopeParams = scoped ? [defaultId, accountId] : [];
 
     const { rows: items } = await q(
@@ -99,27 +103,49 @@ router.get('/summary', async (req, res, next) => {
     // default's — otherwise the fill-in periods for months without a
     // recorded row would be walked on the wrong cadence (migration 013:
     // each account has its own cfg).
-    const cfg = scoped ? await getConfig(req.budget.id, accountId) : await getConfig(req.budget.id);
-    if (cfg) {
-      // Real periods must be scoped the same way cfg is (migration 013: each
-      // account has its own periods). When scoped, restrict to this
-      // account's rows so overlapsReal/firstRealStart reflect only its own
-      // history; unscoped (household roll-up) intentionally keeps walking
-      // every account's periods together with a single cfg — cadences can
-      // legitimately differ across accounts once periods are per-account,
-      // so this is a known simplification for the household view, not a bug
-      // to "fix" here.
+    //
+    // Unscoped (household roll-up) cannot resolve a single shared cfg and
+    // walk every account's templates against it: accounts can legitimately
+    // have different cadences (migration 013), and `every_period` templates
+    // add their full amount once per period walked, so reusing one account's
+    // period count for every account's templates mis-scales any
+    // `every_period` template owned by a differently-cadenced account (e.g.
+    // walking a monthly account's `every_period` template on a biweekly
+    // schedule overstates it ~2.17x). `monthly` recurrence is unaffected —
+    // plannedForPeriod counts calendar occurrences of due_day, which land in
+    // exactly one period regardless of cadence. So the unscoped path below
+    // walks each eligible account separately, on its own cfg and its own
+    // templates, and merges every account's results into the same shared
+    // per-category month buckets (entryFor / c.months) used above.
+    // "Eligible" mirrors the scope the real-data queries above already
+    // enforce: not archived (an archived account is not forecast, though its
+    // already-recorded history from the SQL above still stands untouched)
+    // and base-currency (currency IS NULL — foreign-currency accounts are a
+    // different unit and never mix into this rollup, same as lines 55-56).
+    const today = todayISO();
+    const allTemplates = (await loadTemplates(req.budget.id)).filter((t) => t.category_type !== 'tag');
+
+    // Walks one account's fill-in periods for the year and merges the
+    // results into the shared category/month buckets above. Used by both
+    // the scoped and unscoped paths so their fill-in math never drifts
+    // apart. No-ops if the account has no config row (getAccountConfigs'
+    // own comment warns cfg may be null; the scoped path can also resolve a
+    // null cfg for an unconfigured account).
+    async function fillInAccount(acctId, acctCfg, templates) {
+      if (!acctCfg) return;
+      // Real periods must be scoped the same way cfg is (migration 013:
+      // each account has its own periods) — restrict to this account's own
+      // rows so overlapsReal/firstRealStart reflect only its own history;
+      // one account's materialized period must never suppress another
+      // account's fill-in.
       const { rows: realPeriods } = await q(
-        `SELECT start_date, end_date FROM pay_periods WHERE budget_id = $1${scoped ? ' AND account_id = $2' : ''} ORDER BY start_date`,
-        scoped ? [req.budget.id, accountId] : [req.budget.id]
+        'SELECT start_date, end_date FROM pay_periods WHERE budget_id = $1 AND account_id = $2 ORDER BY start_date',
+        [req.budget.id, acctId]
       );
-      let templates = (await loadTemplates(req.budget.id)).filter((t) => t.category_type !== 'tag');
-      if (scoped) templates = templates.filter((t) => (t.account_id ?? defaultId) === accountId);
       const firstRealStart = realPeriods[0]?.start_date ?? null;
-      const today = todayISO();
       const overlapsReal = (p) => realPeriods.some((r) => r.start_date <= p.end && r.end_date >= p.start);
-      let p = periodContaining(cfg, `${year}-01-01`);
-      let guard = 0;
+      let p = periodContaining(acctCfg, `${year}-01-01`);
+      let guard = 0; // per-account: N accounts means N walks, not one shared cap
       while (p.start <= `${year}-12-31` && guard++ < 400) {
         if (!overlapsReal(p) && Number(p.start.slice(0, 4)) === year) {
           const month = Number(p.start.slice(5, 7));
@@ -132,7 +158,24 @@ router.get('/summary', async (req, res, next) => {
             if (preHistory) c.months[month - 1].cleared += planned;
           }
         }
-        p = periodAfter(cfg, p);
+        p = periodAfter(acctCfg, p);
+      }
+    }
+
+    if (scoped) {
+      const cfg = await getConfig(req.budget.id, accountId);
+      const templates = allTemplates.filter((t) => (t.account_id ?? defaultId) === accountId);
+      await fillInAccount(accountId, cfg, templates);
+    } else {
+      // getAccountConfigs already filters to non-archived accounts (Problem
+      // 2); skip foreign-currency accounts here (Problem 3) and any account
+      // whose cfg is null (Problem 1's per-account walk needs one).
+      const accountConfigs = await getAccountConfigs(req.budget.id);
+      for (const { account, cfg } of accountConfigs) {
+        if (account.currency !== null) continue;
+        if (!cfg) continue;
+        const templates = allTemplates.filter((t) => (t.account_id ?? defaultId) === account.id);
+        await fillInAccount(account.id, cfg, templates);
       }
     }
     const miscRows = { expense: Array(12).fill(0), income: Array(12).fill(0) };
