@@ -3,7 +3,7 @@ import { q } from '../db.js';
 import { bad, requireCents, requireDate, requireId } from '../validation.js';
 import {
   getConfig, ensureMaterialized, getDefaultAccountId, loadTemplates, driftFor,
-  clearLineItemForTransaction, recomputeLineItemActual,
+  clearLineItemForTransaction, recomputeLineItemActual, templateOwnsAccount,
 } from '../services/budget.js';
 import { loadRules, firstMatchingCategory } from '../services/rules.js';
 import { todayISO } from '../services/schedule.js';
@@ -226,7 +226,7 @@ router.post('/bulk-delete', async (req, res, next) => {
 // is never touched.
 router.post('/recategorize', async (req, res, next) => {
   try {
-    const [rules, templates, { rows: accounts }, { rows: txns }] = await Promise.all([
+    const [rules, templates, { rows: accounts }, { rows: txns }, defaultAccountId] = await Promise.all([
       loadRules(req.budget.id),
       loadTemplates(req.budget.id, { includeArchived: true }),
       q('SELECT * FROM accounts WHERE budget_id = $1', [req.budget.id]),
@@ -237,11 +237,13 @@ router.post('/recategorize', async (req, res, next) => {
            AND t.categorized_by IS DISTINCT FROM 'manual'`,
         [req.budget.id]
       ),
+      getDefaultAccountId(req.budget.id),
     ]);
     const templatesById = new Map(templates.map((t) => [t.id, t]));
     const accountsById = new Map(accounts.map((a) => [a.id, a]));
     let matched = 0;
     let skippedClosed = 0;
+    let skippedOtherAccount = 0;
     const drift = [];
     for (const txn of txns) {
       const categoryId = firstMatchingCategory(rules, {
@@ -250,7 +252,21 @@ router.post('/recategorize', async (req, res, next) => {
         account: accountsById.get(txn.account_id) || null,
       });
       if (!categoryId) continue;
-      if (txn.period_closed && templatesById.get(categoryId)?.category_type === 'recurring') {
+      const template = templatesById.get(categoryId);
+      // A rule can match on description/amount/account text but still resolve
+      // to a category owned by a DIFFERENT account than the transaction's own
+      // (e.g. two accounts both have a transaction named "Rent", but only one
+      // owns the "Rent" category). Rather than silently falling through to
+      // the next matching rule - which could assign some other, unrelated
+      // category the user never intended for this transaction - we leave it
+      // uncategorized for manual review. This mirrors the existing
+      // closed-period behavior below: a structural conflict during automatic
+      // rule application leaves the transaction alone rather than guessing.
+      if (template && !templateOwnsAccount(template, txn.account_id, defaultAccountId)) {
+        skippedOtherAccount += 1;
+        continue;
+      }
+      if (txn.period_closed && template?.category_type === 'recurring') {
         skippedClosed += 1;
         continue;
       }
@@ -258,7 +274,7 @@ router.post('/recategorize', async (req, res, next) => {
       if (d) drift.push(d);
       matched += 1;
     }
-    res.json({ examined: txns.length, matched, skippedClosed, drift });
+    res.json({ examined: txns.length, matched, skippedClosed, skippedOtherAccount, drift });
   } catch (err) {
     next(err);
   }

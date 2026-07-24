@@ -4,7 +4,7 @@ import { pool, q } from '../db.js';
 import { bad, requireCents, requireDate } from '../validation.js';
 import {
   getConfig, ensureMaterialized, loadTemplates, getDefaultAccountId, driftFor,
-  clearLineItemForTransaction, setAmountGoingForward,
+  clearLineItemForTransaction, setAmountGoingForward, templateOwnsAccount,
 } from '../services/budget.js';
 import { loadRules, firstMatchingCategory } from '../services/rules.js';
 
@@ -49,19 +49,30 @@ router.post('/preview', async (req, res, next) => {
     const rows = req.body?.rows;
     validateRows(rows);
     const account = await accountForImport(req.budget.id, req.body?.accountId);
-    const [rules, { rows: existing }] = await Promise.all([
+    const [rules, { rows: existing }, templates, defaultAccountId] = await Promise.all([
       loadRules(req.budget.id),
       q('SELECT import_hash FROM transactions WHERE budget_id = $1 AND import_hash IS NOT NULL', [req.budget.id]),
+      loadTemplates(req.budget.id, { includeArchived: true }),
+      getDefaultAccountId(req.budget.id),
     ]);
+    const templatesById = new Map(templates.map((t) => [t.id, t]));
     const seen = new Set(existing.map((r) => r.import_hash));
 
     const preview = rows.map((r) => {
       const key = dedupKey(r);
-      const suggested = firstMatchingCategory(rules, {
+      // Every row in a statement import shares the same account, so a rule
+      // that matches but resolves to a category owned by a DIFFERENT
+      // account is not a valid suggestion here - leave it unsuggested rather
+      // than propose a category the row can never actually be assigned to.
+      let suggested = firstMatchingCategory(rules, {
         description: r.description,
         amountCents: r.amountCents,
         account,
       });
+      const suggestedTemplate = suggested ? templatesById.get(suggested) : null;
+      if (suggestedTemplate && !templateOwnsAccount(suggestedTemplate, account.id, defaultAccountId)) {
+        suggested = null;
+      }
       const duplicate = seen.has(key);
       seen.add(key); // also catches duplicates within the same file
       return {

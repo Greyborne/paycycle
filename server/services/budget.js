@@ -82,6 +82,13 @@ export async function getDefaultAccountId(budgetId, dbc = { query: q }) {
   return created[0].id;
 }
 
+// A category template belongs to account A when
+// (template.account_id ?? defaultAccountId) === A. Mirrors the frontend rule
+// in web/src/categoryScope.js verbatim so both sides agree on ownership.
+export function templateOwnsAccount(template, accountId, defaultAccountId) {
+  return (template.account_id ?? defaultAccountId) === accountId;
+}
+
 // Per-account actual balances: starting balance + cleared line items + misc
 // (uncategorized) transactions attributed to the account. Archived accounts
 // still count toward totals - archiving only hides an account from pickers.

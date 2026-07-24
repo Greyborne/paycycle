@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { api } from '../api.js';
-import { useAuth } from '../App.jsx';
+import { useAccount, useAuth } from '../App.jsx';
 import { fmtDate, fmtMoney } from '../format.js';
 import { useAccounts } from '../useAccounts.js';
 import { categoriesForAccount, categoriesForAccounts } from '../categoryScope.js';
@@ -44,16 +44,26 @@ const SORTS = {
 
 export default function Transactions() {
   const { user } = useAuth();
-  const { accounts: rawAccounts, active: accounts, base } = useAccounts();
+  const { accountId } = useAccount();
+  const { accounts: rawAccounts, base } = useAccounts();
   // Mirrors the backend's default-account fallback (server/services/budget.js
   // getDefaultAccountId): prefer the isDefault, non-archived, base-currency
   // account; else the first base-currency account by sort order. `base` is
   // already filtered to active (non-archived) + base-currency accounts and
   // ordered by sort_order (the API returns accounts sorted that way).
   const defaultAccountId = (base.find((a) => a.isDefault) ?? base[0])?.id ?? null;
+  // The page's own Account filter is removed - it strictly follows the
+  // top-bar account switcher (see AccountSwitcher in App.jsx), resolved the
+  // exact same way: a stale/unset selection falls back to the default
+  // account rather than showing an "all accounts" view (there is no such
+  // state - useAccount()'s accountId is always either a valid base account
+  // id or null/stale, and every account-scoped page resolves it this way).
+  const filterAccountId = base.some((a) => a.id === accountId)
+    ? accountId
+    : (base.find((a) => a.isDefault)?.id ?? base[0]?.id ?? null);
   const [txns, setTxns] = useState(null);
   const [categories, setCategories] = useState([]);
-  const [filters, setFilters] = useState({ from: '', to: '', account: '', category: '', search: '' });
+  const [filters, setFilters] = useState({ from: '', to: '', category: '', search: '' });
   const [sort, setSort] = useState({ key: 'date', dir: -1 });
   const [selected, setSelected] = useState(new Set());
   const [bulkCategory, setBulkCategory] = useState(null);
@@ -69,6 +79,7 @@ export default function Transactions() {
     try {
       const qs = new URLSearchParams();
       for (const [k, v] of Object.entries(filters)) if (v) qs.set(k, v);
+      if (filterAccountId) qs.set('account', filterAccountId);
       const [data, cats] = await Promise.all([
         api(`/transactions?${qs}`),
         api('/categories'),
@@ -79,7 +90,7 @@ export default function Transactions() {
     } catch (err) {
       setError(err.message);
     }
-  }, [filters]);
+  }, [filters, filterAccountId]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -151,7 +162,7 @@ export default function Transactions() {
   const rerunRules = async () => {
     setNotice(null);
     const res = await api('/transactions/recategorize', { method: 'POST' });
-    setNotice(`Rules matched ${res.matched} of ${res.examined} uncategorized transaction(s)${res.skippedClosed ? ` · ${res.skippedClosed} in closed periods skipped` : ''}`);
+    setNotice(`Rules matched ${res.matched} of ${res.examined} uncategorized transaction(s)${res.skippedClosed ? ` · ${res.skippedClosed} in closed periods skipped` : ''}${res.skippedOtherAccount ? ` · ${res.skippedOtherAccount} skipped (matched category belongs to a different account)` : ''}`);
     if (res.drift?.length) setDrift((d) => [...d, ...res.drift]);
     load();
   };
@@ -194,12 +205,6 @@ export default function Transactions() {
           </label>
           <label>To
             <input type="date" value={filters.to} onChange={(e) => setFilter('to', e.target.value)} />
-          </label>
-          <label>Account
-            <select value={filters.account} onChange={(e) => setFilter('account', e.target.value)}>
-              <option value="">All</option>
-              {accounts.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
-            </select>
           </label>
           <label>Category
             <select value={filters.category} onChange={(e) => setFilter('category', e.target.value)}>

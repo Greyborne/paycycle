@@ -5,7 +5,7 @@ import { config } from '../config.js';
 import { pool, q } from '../db.js';
 import {
   getConfig, ensureMaterialized, loadTemplates, driftFor, clearLineItemForTransaction, setAmountGoingForward,
-  getDefaultAccountId, recomputeLineItemActual,
+  getDefaultAccountId, recomputeLineItemActual, templateOwnsAccount,
 } from './budget.js';
 import { decryptSecret, encryptSecret } from './secrets.js';
 import { loadRules, firstMatchingCategory } from './rules.js';
@@ -442,6 +442,17 @@ async function insertSyncedTxn(clientDb, ctx, link, t, userId, results) {
     account: ctx.accountsById.get(link.account_id) || null,
   });
   let template = categoryId ? ctx.templatesById.get(categoryId) : null;
+  // Same conflict as the manual rules-apply loop: a rule can match on
+  // description/amount but resolve to a category owned by a DIFFERENT
+  // account than the one this transaction actually posted to (e.g. two
+  // linked accounts both have a "Rent" transaction, but only one owns the
+  // "Rent" category). Rather than falling through to another rule and
+  // risking an unrelated category assignment, leave it uncategorized for
+  // manual review - consistent with the closed-period conflict just below.
+  if (template && !templateOwnsAccount(template, link.account_id, ctx.defaultAccountId)) {
+    template = null;
+    results.otherAccount += 1;
+  }
   if (template && periodClosed && template.category_type === 'recurring') {
     template = null;
     results.inClosed += 1;
@@ -606,7 +617,7 @@ export async function syncBudget(budget, userId) {
   const { rows: connections } = await q('SELECT * FROM simplefin_connections WHERE budget_id = $1', [budget.id]);
   const results = {
     added: 0, duplicates: 0, updated: 0, skipped: 0, cleared: 0, moved: 0, inClosed: 0, declinedClosed: 0,
-    replanned: 0, drift: [],
+    replanned: 0, otherAccount: 0, drift: [],
   };
   const { rows: accountRows } = await q('SELECT * FROM accounts WHERE budget_id = $1', [budget.id]);
   const defaultAccountId = await getDefaultAccountId(budget.id);

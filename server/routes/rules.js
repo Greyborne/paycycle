@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { q } from '../db.js';
 import { bad, requireCents, requireId } from '../validation.js';
 import { loadRules, ruleMatches } from '../services/rules.js';
+import { getDefaultAccountId, templateOwnsAccount } from '../services/budget.js';
 
 const router = Router();
 
@@ -160,20 +161,36 @@ router.post('/preview', async (req, res, next) => {
   try {
     const f = parseFields(req.body || {});
     if (!hasCriterion(f)) return res.json({ count: 0, sample: [] });
-    const [{ rows: txns }, { rows: accounts }] = await Promise.all([
+    // Predicts what apply would do, so it applies the identical account-
+    // ownership filter as the rules-apply loop in transactions.js: a rule
+    // that matches a transaction but targets a category owned by a
+    // DIFFERENT account than the transaction's own is not counted as a
+    // match here either (see server/routes/transactions.js /recategorize).
+    const categoryTemplateId = req.body?.categoryTemplateId
+      ? Number(req.body.categoryTemplateId) : null;
+    const [{ rows: txns }, { rows: accounts }, { rows: catRows }, defaultAccountId] = await Promise.all([
       q(
         `SELECT t.id, t.date, t.description, t.amount_cents, t.account_id
          FROM transactions t WHERE t.budget_id = $1 ORDER BY t.date DESC, t.id DESC LIMIT 5000`,
         [req.budget.id]
       ),
       q('SELECT * FROM accounts WHERE budget_id = $1', [req.budget.id]),
+      categoryTemplateId
+        ? q('SELECT id, account_id FROM category_templates WHERE id = $1 AND budget_id = $2', [categoryTemplateId, req.budget.id])
+        : Promise.resolve({ rows: [] }),
+      getDefaultAccountId(req.budget.id),
     ]);
+    const targetTemplate = catRows[0] || null;
     const accountsById = new Map(accounts.map((a) => [a.id, a]));
-    const matches = txns.filter((t) => ruleMatches(f, {
-      description: t.description,
-      amountCents: t.amount_cents,
-      account: accountsById.get(t.account_id) || null,
-    }));
+    const matches = txns.filter((t) => {
+      if (!ruleMatches(f, {
+        description: t.description,
+        amountCents: t.amount_cents,
+        account: accountsById.get(t.account_id) || null,
+      })) return false;
+      if (targetTemplate && !templateOwnsAccount(targetTemplate, t.account_id, defaultAccountId)) return false;
+      return true;
+    });
     res.json({
       count: matches.length,
       sample: matches.slice(0, 10).map((t) => ({
