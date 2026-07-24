@@ -22,7 +22,7 @@ import reportRoutes from './routes/reports.js';
 import householdRoutes from './routes/household.js';
 import accountRoutes from './routes/accounts.js';
 import notificationRoutes from './routes/notifications.js';
-import plaidRoutes from './routes/plaid.js';
+import simplefinRoutes from './routes/simplefin.js';
 import ruleRoutes from './routes/rules.js';
 import adminRoutes from './routes/admin.js';
 
@@ -80,12 +80,12 @@ const financialLimiter = rateLimit({
   message: { error: 'Too many requests, please slow down and try again shortly' },
 });
 
-// /api/import and /api/plaid deliberately get no separate allowance or
+// /api/import and /api/simplefin deliberately get no separate allowance or
 // exemption. A CSV import is one POST regardless of row count (up to 2000
 // rows validated server-side in routes/import.js) - it doesn't burst into
-// many requests - and a Plaid link/sync flow is a handful of calls. Neither
-// pattern comes close to the shared ceiling above, so a bespoke bucket would
-// add complexity without addressing a real burst risk.
+// many requests - and a SimpleFIN claim/sync flow is a handful of calls.
+// Neither pattern comes close to the shared ceiling above, so a bespoke
+// bucket would add complexity without addressing a real burst risk.
 const budgetScoped = [requireAuth, financialLimiter, attachBudget(getMembership)];
 
 app.use('/api/auth', authRoutes);
@@ -100,7 +100,7 @@ app.use('/api/reports', budgetScoped, reportRoutes);
 app.use('/api/household', budgetScoped, householdRoutes);
 app.use('/api/accounts', budgetScoped, accountRoutes);
 app.use('/api/notifications', budgetScoped, notificationRoutes);
-app.use('/api/plaid', budgetScoped, plaidRoutes);
+app.use('/api/simplefin', budgetScoped, simplefinRoutes);
 app.use('/api/rules', budgetScoped, ruleRoutes);
 app.use('/api/admin', requireAuth, requireAdmin, adminRoutes);
 
@@ -122,9 +122,6 @@ app.use((err, req, res, next) => {
 await waitForDb();
 await migrate();
 try {
-  const { encryptLegacyTokens } = await import('./services/plaid.js');
-  const enc = await encryptLegacyTokens();
-  if (enc) console.log(`[paycycle] encrypted ${enc} legacy bank token(s)`);
   const { backfillClosedSnapshots } = await import('./services/budget.js');
   const n = await backfillClosedSnapshots();
   if (n) console.log(`[paycycle] froze cleared-balance snapshots for ${n} closed period(s)`);

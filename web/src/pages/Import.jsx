@@ -154,6 +154,7 @@ export default function Import() {
           <label>
             …or paste CSV text
             <textarea
+              className="mono-input"
               rows={8} value={raw} onChange={(e) => setRaw(e.target.value)}
               placeholder={'Date,Description,Amount\n07/01/2026,ELECTRIC CO PMT,-250.00'}
             />

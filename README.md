@@ -65,18 +65,22 @@ paper, but three bills haven't posted yet") is the signal.
   plan by more than a configurable threshold (default $5 or 5%), PayCycle
   offers to record the new amount going forward using the same
   effective-dated history that powers the projection.
-- **Live bank sync (Plaid)**: connect a bank through Plaid Link, map each
-  bank account to a PayCycle account, and pull posted transactions on demand.
-  Synced rows flow through the same pipeline as CSV imports — duplicate-safe
-  (cursor + per-transaction hash), auto-categorized by your learned rules,
-  and rule matches mark the period's line item cleared at the actual amount.
-  Access tokens are encrypted at rest (AES-256-GCM keyed from
-  `SESSION_SECRET`) and never sent to the browser. Plaid requires your own
-  developer credentials (client ID/secret and environment — sandbox or
-  production) via the environment variables below; without them the app is
-  fully functional on CSV import alone.
-  Optional: the feature is hidden unless `PLAID_CLIENT_ID`/`PLAID_SECRET`
-  are set (sandbox keys are free at dashboard.plaid.com).
+- **Live bank sync (SimpleFIN)**: off by default — set `BANK_SYNC_ENABLED=true`
+  to turn it on. Sign up with SimpleFIN Bridge yourself and pay
+  SimpleFIN directly (~$1.50–2/month); nothing is required of the person
+  running the server — no business application, no API keys, no per-connection
+  billing. Get a setup token, paste it into Import → Bank sync, and map each
+  bank account to a PayCycle account. Synced rows flow through the same
+  pipeline as CSV imports — duplicate-safe, auto-categorized by your learned
+  rules, and rule matches mark the period's line item cleared at the actual
+  amount. Only posted transactions are imported; pending ones are skipped. The
+  access URL is encrypted at rest (AES-256-GCM keyed from `SESSION_SECRET`)
+  and never sent to the browser — rotating `SESSION_SECRET` means reconnecting
+  your banks.
+
+  Limitation: SimpleFIN has no deletion feed or incremental cursor, so a
+  transaction deleted at the bank after import will remain in your budget and
+  must be removed by hand.
 - **CSV bank-statement import** with auto-categorization: map your bank's
   columns once, review suggested matches, and confirm. Matched rows mark the
   period's line item cleared (optionally snapping the planned amount to the
@@ -152,7 +156,7 @@ locally with `build: .` on arm64 hosts:
 |---|---|---|
 | `DATABASE_URL` | *(empty)* | Optional full Postgres connection string; if set, it takes priority over the `PG*` vars below. |
 | `PGHOST` / `PGPORT` / `PGUSER` / `PGPASSWORD` / `PGDATABASE` | `localhost` / `5432` / `paycycle` / `paycycle` / `paycycle` | Discrete Postgres connection settings, used when `DATABASE_URL` is unset. The compose file wires these to the bundled `db` service. Because they're passed as separate fields (not a URL), a password containing `@ : / %` needs no encoding; `PGPASSWORD_FILE` (Docker secret) is also supported for passwords containing `$`. |
-| `SESSION_SECRET` | *(random per boot)* | **Set this.** Secret for signing session tokens. If unset, a temporary one is generated and all logins are invalidated on restart. |
+| `SESSION_SECRET` | *(random per boot)* | **Set this.** Secret for signing session tokens and encrypting stored bank-sync access URLs. If unset, a temporary one is generated and all logins are invalidated on restart. Changing it also invalidates encrypted bank connections — you'll need to reconnect any linked banks. |
 | `PORT` | `8080` | Port the app listens on inside the container. |
 | `ALLOW_REGISTRATION` | `true` | Set `false` to disable open sign-ups after creating your own account. Household invite codes still work, so family can always join. |
 | `ADMIN_EMAILS` | *(empty)* | Comma-separated emails granted admin access to the `/admin` user-management page. |
@@ -167,9 +171,8 @@ locally with `build: .` on arm64 hosts:
 | `SMTP_USER` / `SMTP_PASS` | *(empty)* | SMTP credentials, if your server needs them. |
 | `SMTP_FROM` | `PayCycle <paycycle@localhost>` | From address on notification emails. |
 | `NOTIFICATION_EMAIL_INTERVAL_MINUTES` | `60` | How often the server checks for notifications to email. |
-| `PLAID_CLIENT_ID` / `PLAID_SECRET` | *(empty)* | Plaid API keys for live bank sync. Leave empty to hide the feature. |
-| `PLAID_ENV` | `sandbox` | `sandbox`, `development`, or `production`. In sandbox, connect any bank with the test login `user_good` / `pass_good`. |
-| `PLAID_COUNTRY_CODES` | `US` | Comma-separated country codes for Plaid Link. |
+| `BANK_SYNC_ENABLED` | `false` | Set `true` to turn on live bank sync (SimpleFIN). Off by default; disabled routes 404. |
+| `SIMPLEFIN_ALLOW_INSECURE_HOSTS` | `false` | Allows bank sync to connect to private/reserved network addresses. Only for self-hosters running their own SimpleFIN bridge on a local network. Leave off otherwise — it relaxes an SSRF protection. |
 | `OIDC_ISSUER` | *(empty)* | OIDC issuer URL for single sign-on, e.g. `https://accounts.google.com`. Register your client with redirect URI `<APP_URL>/api/auth/oidc/callback`. Leave empty to hide SSO. |
 | `OIDC_CLIENT_ID` / `OIDC_CLIENT_SECRET` | *(empty)* | Credentials from your OIDC provider. |
 | `OIDC_PROVIDER_NAME` | `SSO` | Label on the login button ("Continue with Google"). |
@@ -280,7 +283,7 @@ npm test                          # schedule/projection engine tests
 The entire original Phase 2 list has shipped: CSV import with
 auto-categorization, reports/exports, PWA installability, shared household
 budgets, multiple bank accounts, in-app + email notifications,
-foreign-currency tracked accounts, Plaid bank sync, and OIDC single sign-on.
+foreign-currency tracked accounts, SimpleFIN bank sync, and OIDC single sign-on.
 
 Ideas beyond the original scope: scheduled automatic bank sync, richer
 analytics (category trends, sankey flows), budget goal tracking, and CSV/PDF

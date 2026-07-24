@@ -59,11 +59,9 @@ export const config = {
     from: process.env.SMTP_FROM || 'PayCycle <paycycle@localhost>',
     intervalMinutes: parseInt(process.env.NOTIFICATION_EMAIL_INTERVAL_MINUTES || '60', 10),
   },
-  plaid: {
-    clientId: process.env.PLAID_CLIENT_ID || '',
-    secret: process.env.PLAID_SECRET || '',
-    env: (process.env.PLAID_ENV || 'sandbox').toLowerCase(),
-    countryCodes: (process.env.PLAID_COUNTRY_CODES || 'US').split(',').map((c) => c.trim().toUpperCase()),
+  simplefin: {
+    enabled: process.env.BANK_SYNC_ENABLED === 'true',
+    allowInsecureHosts: process.env.SIMPLEFIN_ALLOW_INSECURE_HOSTS === 'true',
   },
   oidc: {
     issuer: (process.env.OIDC_ISSUER || '').replace(/\/$/, ''),
