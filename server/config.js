@@ -30,6 +30,10 @@ function readSecret(name) {
   return process.env[name];
 }
 
+// Must match the preset names in web/src/instanceColors.js. An unrecognised
+// value is dropped server-side rather than passed through to the client.
+const INSTANCE_COLOR_PRESETS = ['blue', 'green', 'purple', 'red', 'amber'];
+
 export const config = {
   port: parseInt(process.env.PORT || '8080', 10),
   // Back-compat: if DATABASE_URL is set, it wins outright (see server/db.js).
@@ -62,6 +66,15 @@ export const config = {
   simplefin: {
     enabled: process.env.BANK_SYNC_ENABLED === 'true',
     allowInsecureHosts: process.env.SIMPLEFIN_ALLOW_INSECURE_HOSTS === 'true',
+  },
+  // Lets a non-production instance identify itself in the browser tab, so an
+  // operator running dev/staging alongside prod can tell them apart. Both
+  // optional; unset (the production default) must leave the app unchanged.
+  instance: {
+    label: (process.env.INSTANCE_LABEL || '').trim().slice(0, 24),
+    color: INSTANCE_COLOR_PRESETS.includes(String(process.env.INSTANCE_COLOR || '').trim().toLowerCase())
+      ? String(process.env.INSTANCE_COLOR).trim().toLowerCase()
+      : '',
   },
   oidc: {
     issuer: (process.env.OIDC_ISSUER || '').replace(/\/$/, ''),

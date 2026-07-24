@@ -165,6 +165,8 @@ locally with `build: .` on arm64 hosts:
 | `TRUST_PROXY` | `false` | Set `true` when running behind a single reverse proxy so client IPs resolve correctly (trusts exactly one hop); behind more than one proxy, set this to the number of proxy hops instead, e.g. `TRUST_PROXY=2`. |
 | `TZ` | container default | Timezone used to decide "today" for pay-period boundaries. Set to your local zone, e.g. `America/New_York`. |
 | `APP_URL` | *(empty)* | Public URL of your instance, used for links inside notification emails, e.g. `https://paycycle.example.com`. |
+| `INSTANCE_LABEL` | *(empty)* | Optional short text (e.g. `Dev`, `Staging`) that identifies a non-production instance in the browser tab title and a sidebar badge. Both `INSTANCE_LABEL` and `INSTANCE_COLOR` are optional; leaving them unset is the production default and leaves the app unchanged. |
+| `INSTANCE_COLOR` | *(empty)* | Tint used for the instance badge and favicon. Must be one of: `blue`, `green`, `purple`, `red`, `amber` — any other value is ignored. |
 | `SMTP_HOST` | *(empty)* | SMTP server for emailed notifications. Leave empty to disable email entirely (in-app notifications always work). |
 | `SMTP_PORT` | `587` | SMTP port. |
 | `SMTP_SECURE` | `false` | Set `true` for implicit TLS (usually port 465). |

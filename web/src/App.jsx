@@ -20,6 +20,7 @@ import Rules from './pages/Rules.jsx';
 import Admin from './pages/Admin.jsx';
 import NotificationsBell from './components/NotificationsBell.jsx';
 import { useAccounts } from './useAccounts.js';
+import { applyInstanceColor } from './instanceColors.js';
 
 const AuthContext = createContext(null);
 export const useAuth = () => useContext(AuthContext);
@@ -38,12 +39,41 @@ export const THEME_MODES = ['system', 'light', 'dark'];
 const ThemeContext = createContext({ themeMode: 'system', setThemeMode: () => {} });
 export const useTheme = () => useContext(ThemeContext);
 
+// Instance branding (INSTANCE_LABEL/INSTANCE_COLOR): { label, color } as
+// served by /auth/config, applied globally once at boot. Empty fields mean
+// "no branding" - the production default, which must render nothing extra.
+const InstanceContext = createContext({ label: '', color: '' });
+export const useInstance = () => useContext(InstanceContext);
+
+// Set by applyInstanceBranding() at boot so the theme-color meta tag stays
+// tinted to the instance color across light/dark toggles, instead of
+// reverting to the plain page-background value applyTheme() uses otherwise.
+let instanceThemeColor = null;
+
 function applyTheme(mode) {
   const dark = mode === 'dark'
     || (mode === 'system' && window.matchMedia('(prefers-color-scheme: dark)').matches);
   document.documentElement.setAttribute('data-theme', dark ? 'dark' : 'light');
   const meta = document.querySelector('meta[name="theme-color"]');
-  if (meta) meta.setAttribute('content', dark ? '#0f0e0d' : '#f4f2ee');
+  if (meta) meta.setAttribute('content', instanceThemeColor || (dark ? '#0f0e0d' : '#f4f2ee'));
+}
+
+// Applies the /auth/config `instance` block globally: runtime tab title,
+// favicon/apple-touch-icon tint, and the badge's CSS custom properties. A
+// no-op (leaves the static defaults from index.html untouched) when both
+// fields are empty - the production case.
+function applyInstanceBranding({ label, color }) {
+  if (label) document.title = `PayCycle | ${label}`;
+  if (!color) return;
+  const applied = applyInstanceColor(color);
+  if (!applied) return;
+  instanceThemeColor = applied.hex;
+  const icon = document.querySelector('link[rel="icon"]');
+  if (icon) icon.setAttribute('href', applied.dataUri);
+  const touchIcon = document.querySelector('link[rel="apple-touch-icon"]');
+  if (touchIcon) touchIcon.setAttribute('href', applied.dataUri);
+  const meta = document.querySelector('meta[name="theme-color"]');
+  if (meta) meta.setAttribute('content', applied.hex);
 }
 
 function ThemeToggle() {
@@ -111,6 +141,15 @@ function AccountSwitcher() {
   );
 }
 
+function InstanceBadge() {
+  const { label } = useInstance();
+  if (!label) return null;
+  // title carries the full label to assistive tech / hover when the pill
+  // truncates visually (styles.css caps its width); still plain text, not a
+  // control - no tabindex/role added, so it stays out of the tab order.
+  return <span className="badge instance-badge" title={label}>{label}</span>;
+}
+
 function Shell({ children }) {
   const { user, setUser } = useAuth();
   const navigate = useNavigate();
@@ -146,7 +185,10 @@ function Shell({ children }) {
     <div className="shell">
       <aside className={`sidebar ${navOpen ? 'open' : ''} ${collapsed ? 'collapsed' : ''}`}>
         <div className="sidebar-brand">
-          <Link to="/" className="brand">Pay<span>Cycle</span></Link>
+          <span className="brand-group">
+            <Link to="/" className="brand">Pay<span>Cycle</span></Link>
+            <InstanceBadge />
+          </span>
           <button
             className="btn btn-ghost collapse-btn"
             title={collapsed ? 'Expand sidebar' : 'Minimize sidebar'}
@@ -245,6 +287,18 @@ export default function App() {
     refreshUser().finally(() => setLoading(false));
   }, [refreshUser]);
 
+  // Instance branding applies pre- and post-login, so it's fetched once here
+  // rather than tied to auth state. A failed/empty response is a no-op - the
+  // static index.html defaults (title "PayCycle", static /icon.svg) stand.
+  const [instance, setInstance] = useState({ label: '', color: '' });
+  useEffect(() => {
+    api('/auth/config').then((data) => {
+      const inst = data.instance || { label: '', color: '' };
+      setInstance(inst);
+      applyInstanceBranding(inst);
+    }).catch(() => {});
+  }, []);
+
   if (loading) return <div className="page-loading">Loading…</div>;
 
   const ctx = { user, setUser, refreshUser, registrationOpen };
@@ -252,6 +306,7 @@ export default function App() {
   return (
     <AuthContext.Provider value={ctx}>
       <ThemeContext.Provider value={{ themeMode, setThemeMode }}>
+      <InstanceContext.Provider value={instance}>
       <AccountContext.Provider value={{ accountId, setAccountId }}>
       {!user ? (
         <Routes>
@@ -282,6 +337,7 @@ export default function App() {
         </Shell>
       )}
       </AccountContext.Provider>
+      </InstanceContext.Provider>
       </ThemeContext.Provider>
     </AuthContext.Provider>
   );

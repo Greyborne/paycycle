@@ -125,6 +125,7 @@ a { color: var(--accent-hi); }
 }
 
 .sidebar-brand { display: flex; align-items: center; justify-content: space-between; gap: 0.25rem; padding: 0 0.25rem 1rem 0.5rem; }
+.brand-group { display: flex; align-items: center; gap: 0.35rem; min-width: 0; }
 .collapse-btn { padding: 0.3rem 0.4rem; display: flex; align-items: center; }
 .collapse-btn svg { width: 17px; height: 17px; }
 
@@ -132,6 +133,7 @@ a { color: var(--accent-hi); }
 .sidebar.collapsed { width: 64px; padding-left: 0.6rem; padding-right: 0.6rem; }
 .sidebar.collapsed .sidebar-brand { justify-content: center; padding-left: 0; padding-right: 0; }
 .sidebar.collapsed .brand,
+.sidebar.collapsed .instance-badge,
 .sidebar.collapsed .nav-item span,
 .sidebar.collapsed .sidebar-foot .btn span,
 .sidebar.collapsed .nav-label,
@@ -433,6 +435,27 @@ input[type="checkbox"] { accent-color: var(--accent); }
 .health-healthy { background: var(--health-healthy-bg); color: var(--health-healthy-ink); }
 .health-none { background: var(--health-none-bg); color: var(--health-none-ink); }
 .badge-current { background: var(--accent-soft); color: var(--accent-hi); }
+
+/* Non-production instance badge (INSTANCE_LABEL/INSTANCE_COLOR). The tint/ink
+   custom properties are set on :root by applyInstanceColor() at boot, from
+   the single preset map in instanceColors.js; only the *-dark vs *-light
+   selection lives here, matching the rest of the token file's dark-default/
+   light-override pattern. */
+.instance-badge {
+  background: var(--instance-badge-bg-dark);
+  color: var(--instance-badge-ink-dark);
+  margin-left: 0.35rem;
+  /* The label is server-capped at 24 chars but the sidebar/drawer is not -
+     cap the pill itself (not just its flex parent) so a long label
+     truncates with an ellipsis instead of bleeding past the sidebar edge. */
+  max-width: 9rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+:root[data-theme="light"] .instance-badge {
+  background: var(--instance-badge-bg-light);
+  color: var(--instance-badge-ink-light);
+}
 
 /* A closed-period chip that doubles as the reopen control. */
 .badge-reopen {
@@ -891,6 +914,7 @@ input.category-name:hover, input.category-name:focus { border-color: var(--borde
   /* the drawer is always full-width nav; desktop minimize doesn't apply */
   .sidebar.collapsed { width: 232px; padding-left: 0.85rem; padding-right: 0.85rem; }
   .sidebar.collapsed .brand,
+  .sidebar.collapsed .instance-badge,
   .sidebar.collapsed .nav-item span,
   .sidebar.collapsed .sidebar-foot .btn span,
   .sidebar.collapsed .nav-label,

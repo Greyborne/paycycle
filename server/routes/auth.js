@@ -290,6 +290,7 @@ router.get('/config', (req, res) => {
     oidc: oidcEnabled()
       ? { enabled: true, name: config.oidc.providerName }
       : { enabled: false },
+    instance: config.instance,
   });
 });
 
