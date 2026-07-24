@@ -196,6 +196,7 @@ docker compose up -d
          ct.name              AS category,
          ct.account_id        AS category_account,
          pp.account_id        AS period_account,
+         pp.closed_at IS NOT NULL AS period_closed,
          pp.start_date
   FROM line_items li
   JOIN pay_periods pp        ON pp.id = li.pay_period_id
@@ -213,6 +214,23 @@ docker compose up -d
   explicit account; categories without an account belong to your household's
   default. Correct these manually: move each to the right period or delete and
   re-import on the correct account.
+
+  Before making changes, check whether each row sits in a closed period — the extended
+  query will show you which rows are frozen:
+
+  - **Open period:** safe to correct. Reassign the transaction to a category belonging
+    to the right account, or remove the line item, as you prefer.
+  - **Closed period:** leave it alone by default. It is reconciled history; its
+    `closed_snapshot` was recorded at close and editing the rows beneath it makes the
+    live figures contradict that record. If you genuinely want it corrected, the
+    defensible route is to reopen the period in the app, make the change, and close it
+    again so the snapshot is recomputed rather than contradicted — never a direct
+    database edit.
+  - If the account involved is archived and the period is closed, there is usually
+    nothing worth fixing: no live period and no active account depend on it.
+
+  Finding rows here is not automatically a problem to solve. For most users these are
+  historical and best left as they are.
 - **Rules report match counts.** During import or when running rules manually,
   you will see a notice like "Rules matched 5 of 12 uncategorized transaction(s)
   · 2 in closed periods skipped · 1 skipped (matched category belongs to a
