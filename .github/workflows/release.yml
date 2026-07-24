@@ -5,8 +5,10 @@ name: Release
 # This runs the tests, builds the amd64-only image (arm64 is not supported —
 # cross-arch emulation in CI hung, so arm64 was dropped as a deliberate
 # non-goal, not an oversight), pushes it to Docker Hub (as :<version>,
-# :<major>.<minor>, and :latest), and creates a GitHub Release. Requires
-# DOCKERHUB_USERNAME and DOCKERHUB_TOKEN repo secrets.
+# :<major>.<minor>, and :latest), syncs the Docker Hub repository
+# description from README.md so it can't drift from the repo, and creates
+# a GitHub Release. Requires DOCKERHUB_USERNAME and DOCKERHUB_TOKEN repo
+# secrets.
 
 on:
   push:
@@ -56,6 +58,32 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      - name: Sync Docker Hub description from README
+        # Keeps the Docker Hub overview from drifting out of sync with the
+        # repo (it used to be hand-edited and still mentioned Plaid long
+        # after Plaid was removed). Docker Hub caps short-description at
+        # 100 chars and full-description (readme) at 25,000 chars; both
+        # fit comfortably today. continue-on-error: true because this is
+        # cosmetic — the image push and GitHub Release above are what
+        # actually matter, and a description-sync hiccup shouldn't fail an
+        # otherwise-good release.
+        # NOTE: this action's docs state DOCKERHUB_TOKEN must be a
+        # password or a Personal Access Token with Read/Write/Delete
+        # scope. If DOCKERHUB_TOKEN was created with a narrower scope
+        # (e.g. read/write only, for image pushes), this step will fail
+        # silently (thanks to continue-on-error) and the description will
+        # never update — check the Actions log for this step, and if
+        # needed, reissue DOCKERHUB_TOKEN as a Read/Write/Delete token in
+        # Docker Hub account settings.
+        uses: peter-evans/dockerhub-description@v5
+        continue-on-error: true
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+          repository: ${{ secrets.DOCKERHUB_USERNAME }}/paycycle
+          short-description: Self-hosted pay-period budgeting with dual balance tracking.
+          readme-filepath: ./README.md
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v3

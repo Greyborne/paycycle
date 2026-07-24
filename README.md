@@ -193,6 +193,20 @@ database connection are healthy, 503 otherwise. The Docker image ships with a
 Hitting a problem (login errors, "waiting for database", logged out on restart)?
 See [TROUBLESHOOTING.md](TROUBLESHOOTING.md).
 
+## Upgrading
+
+Before upgrading, check the release notes — some releases ship one-way database
+migrations. Always back up first:
+
+```bash
+docker compose exec -T db pg_dump -U paycycle -d paycycle --clean --if-exists | gzip > paycycle-backup-$(date +%F).sql.gz
+```
+
+For releases with migrations, follow the version-specific guide:
+
+- [UPGRADE-v0.8.0.md](docs/UPGRADE-v0.8.0.md) — account-first pay periods
+- [UPGRADE-v0.11.0.md](docs/UPGRADE-v0.11.0.md) — line-item actual amounts
+
 ## Backing up your data
 
 All persistent state lives in the `paycycle-db` named volume. To back up:
