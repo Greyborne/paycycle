@@ -1,7 +1,9 @@
 import { Router } from 'express';
 import { pool, q } from '../db.js';
 import { bad, requireCents, requireDate, requireId } from '../validation.js';
-import { getConfig, loadTemplates, effectiveAmount, ensureMaterialized } from '../services/budget.js';
+import {
+  getConfig, loadTemplates, effectiveAmount, ensureMaterialized, getDefaultAccountId, setAmountGoingForward,
+} from '../services/budget.js';
 import { periodContaining, todayISO } from '../services/schedule.js';
 
 const router = Router();
@@ -197,24 +199,40 @@ router.patch('/:id', async (req, res, next) => {
 // Record a new effective-dated amount ("electric is $260 starting Aug 1").
 // Same-date entries overwrite (correction); different dates append history.
 router.post('/:id/amounts', async (req, res, next) => {
+  const client = await pool.connect();
   try {
     const id = requireId(req.params.id, 'category');
     const { rows: existing } = await q(
-      'SELECT id FROM category_templates WHERE id = $1 AND budget_id = $2', [id, req.budget.id]
+      'SELECT id, account_id FROM category_templates WHERE id = $1 AND budget_id = $2', [id, req.budget.id]
     );
     if (!existing.length) return res.status(404).json({ error: 'Category not found' });
     const amount = requireCents(req.body?.amountCents, 'amountCents');
     const effective = requireDate(req.body?.effectiveStartDate || todayISO(), 'effectiveStartDate');
-    await q(
-      `INSERT INTO category_amount_history (category_template_id, amount_cents, effective_start_date)
-       VALUES ($1, $2, $3)
-       ON CONFLICT (category_template_id, effective_start_date) DO UPDATE SET amount_cents = $2`,
-      [id, amount, effective]
-    );
+    // Reprice with the template's OWN account's pay-period cfg, not the
+    // household default (mirrors import.js's cfgForTemplate) - otherwise
+    // future periods get walked against the wrong account's period
+    // boundaries.
+    const defaultAccountId = await getDefaultAccountId(req.budget.id);
+    const acctId = existing[0].account_id ?? defaultAccountId;
+    const cfg = await getConfig(req.budget.id, acctId);
+    if (!cfg) bad('Complete setup first');
+
+    await client.query('BEGIN');
+    // setAmountGoingForward both appends the history row (same
+    // insert-or-correct-on-same-date semantics as before) and walks every
+    // non-closed materialized period from the effective date forward,
+    // updating planned_amount_cents/line items - so no separate history
+    // insert is needed here.
+    await setAmountGoingForward(client, req.budget.id, cfg, id, amount, effective);
+    await client.query('COMMIT');
+
     const templates = await loadTemplates(req.budget.id, { includeArchived: true });
     res.status(201).json({ category: publicTemplate(templates.find((t) => t.id === id)) });
   } catch (err) {
+    await client.query('ROLLBACK').catch(() => {});
     next(err);
+  } finally {
+    client.release();
   }
 });
 

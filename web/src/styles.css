@@ -584,6 +584,15 @@ input[type="checkbox"] { accent-color: var(--accent); }
   border-radius: var(--radius-card);
   padding: 1rem 1.1rem;
   margin-bottom: 1.1rem;
+  /* Isolates this card's layout so its nested .table-scroll's internally-
+     scrollable table (needed now that the Actual/Actions columns widen it)
+     cannot leak scrollable-overflow past its own box into the page — a
+     Chromium quirk specific to a wide auto-layout table nested inside this
+     page's CSS Grid + position:sticky column structure (verified: not
+     present on Transactions/Reports/Import, which use the same
+     .table-scroll pattern without that nesting). Pure layout containment;
+     no visual/paint effect, no design-system value. */
+  contain: layout;
 }
 .period-table h3 { margin-top: 0; }
 

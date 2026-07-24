@@ -5,7 +5,7 @@ import { config } from '../config.js';
 import { pool, q } from '../db.js';
 import {
   getConfig, ensureMaterialized, loadTemplates, driftFor, clearLineItemForTransaction, setAmountGoingForward,
-  getDefaultAccountId,
+  getDefaultAccountId, recomputeLineItemActual,
 } from './budget.js';
 import { decryptSecret, encryptSecret } from './secrets.js';
 import { loadRules, firstMatchingCategory } from './rules.js';
@@ -488,13 +488,17 @@ async function insertSyncedTxn(clientDb, ctx, link, t, userId, results) {
 // deduped by import_hash. A conflict on that hash means the row already
 // exists: if the re-fetched values differ from what we stored, update in
 // place (and re-resolve its pay period); otherwise it's a plain repeat.
-async function processTxn(clientDb, ctx, link, sfTxn, userId, results) {
+// Exported (only syncBudget itself is otherwise part of the public API) so
+// the restatement/period-move path can be exercised directly in
+// server/test/integration/line-item-actuals.test.js without standing up a
+// mocked SimpleFIN HTTP endpoint.
+export async function processTxn(clientDb, ctx, link, sfTxn, userId, results) {
   const { budget } = ctx;
   const t = toTxn(link.sf_account_id, sfTxn);
   if (t.amountCents === 0) return;
 
   const { rows: existing } = await clientDb.query(
-    'SELECT amount_cents, description, date FROM transactions WHERE budget_id = $1 AND import_hash = $2',
+    'SELECT amount_cents, description, date, pay_period_id, category_template_id FROM transactions WHERE budget_id = $1 AND import_hash = $2',
     [budget.id, t.hash]
   );
 
@@ -505,17 +509,67 @@ async function processTxn(clientDb, ctx, link, sfTxn, userId, results) {
       results.duplicates += 1;
       return;
     }
+
+    // Never mutate anything belonging to a closed (frozen) period - neither
+    // the period the transaction CURRENTLY sits in, nor, if the restatement
+    // would move it, the period it would land in. A closed period's
+    // closed_snapshot is the audited record of what was true at close-out;
+    // silently rewriting amount_cents (or, via recomputeLineItemActual
+    // below, a line item's cleared_amount_cents) underneath it would make
+    // the live balance disagree with its own frozen snapshot, with no trail
+    // and no way to detect it from the UI. Mirrors the `periodClosed` guard
+    // insertSyncedTxn already applies to brand-new rows just below. Nothing
+    // is partially applied: this check runs BEFORE the UPDATE, so a decline
+    // leaves amount_cents/date/pay_period_id/cleared_amount_cents exactly as
+    // they were. Reopening the period is the documented way to reconcile a
+    // bank-side correction that lands here.
+    let oldPeriodClosed = false;
+    if (cur.pay_period_id) {
+      const { rows: oldPeriod } = await clientDb.query(
+        'SELECT closed_at FROM pay_periods WHERE id = $1', [cur.pay_period_id]
+      );
+      oldPeriodClosed = Boolean(oldPeriod[0]?.closed_at);
+    }
     const { rows: period } = await clientDb.query(
-      'SELECT id FROM pay_periods WHERE budget_id = $1 AND account_id = $3 AND start_date <= $2 AND end_date >= $2 ORDER BY start_date DESC LIMIT 1',
+      'SELECT id, closed_at FROM pay_periods WHERE budget_id = $1 AND account_id = $3 AND start_date <= $2 AND end_date >= $2 ORDER BY start_date DESC LIMIT 1',
       [budget.id, t.date, link.account_id]
     );
     if (!period.length) return; // now outside recorded periods; leave the existing row as-is
+    const newPeriodId = period[0].id;
+    if (oldPeriodClosed || Boolean(period[0].closed_at)) {
+      // Distinct from `inClosed` on purpose: `inClosed` counts a brand-new
+      // transaction that was inserted but left uncategorized because its
+      // period is closed - the row still lands. This counts a restatement
+      // that was refused outright - nothing about the existing row changes.
+      // Conflating the two would hide that a correction never applied.
+      results.declinedClosed += 1;
+      return;
+    }
     await clientDb.query(
       `UPDATE transactions SET amount_cents = $1, description = $2, date = $3, pay_period_id = $4
        WHERE budget_id = $5 AND import_hash = $6`,
-      [t.amountCents, t.description, t.date, period[0].id, budget.id, t.hash]
+      [t.amountCents, t.description, t.date, newPeriodId, budget.id, t.hash]
     );
     results.updated += 1;
+
+    // A restated amount (a bank correcting a pending transaction on
+    // re-fetch, the whole reason this branch exists) can leave a recurring
+    // category's cleared_amount_cents pointing at a stale actual - see
+    // docs/plans/planned-vs-actual.md. Only recurring templates carry a
+    // line item; tag/uncategorized transactions have none to recompute. If
+    // the restatement also moved the transaction to a different period
+    // (rare - a corrected date crossing a period boundary - but the same
+    // UPDATE above already does that), the OLD period's line item must be
+    // recomputed too, since it just lost this transaction's contribution.
+    // Runs on `clientDb` so it shares the caller's sync transaction and
+    // rolls back with it.
+    const template = cur.category_template_id ? ctx.templatesById.get(cur.category_template_id) : null;
+    if (template?.category_type === 'recurring') {
+      if (cur.pay_period_id && cur.pay_period_id !== newPeriodId) {
+        await recomputeLineItemActual(clientDb, cur.pay_period_id, cur.category_template_id);
+      }
+      await recomputeLineItemActual(clientDb, newPeriodId, cur.category_template_id);
+    }
     return;
   }
 
@@ -550,7 +604,10 @@ export async function syncBudget(budget, userId) {
   await ensureMaterialized(budget.id, cfg);
 
   const { rows: connections } = await q('SELECT * FROM simplefin_connections WHERE budget_id = $1', [budget.id]);
-  const results = { added: 0, duplicates: 0, updated: 0, skipped: 0, cleared: 0, moved: 0, inClosed: 0, replanned: 0, drift: [] };
+  const results = {
+    added: 0, duplicates: 0, updated: 0, skipped: 0, cleared: 0, moved: 0, inClosed: 0, declinedClosed: 0,
+    replanned: 0, drift: [],
+  };
   const { rows: accountRows } = await q('SELECT * FROM accounts WHERE budget_id = $1', [budget.id]);
   const defaultAccountId = await getDefaultAccountId(budget.id);
   const ctx = {

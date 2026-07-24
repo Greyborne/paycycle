@@ -65,17 +65,33 @@ function PlannedCell({ item, currency, editable, onSave }) {
   );
 }
 
-function ItemTable({ title, items, currency, editable, onPatch, plannedTotal, clearedTotal, clearedNote }) {
-  const cols = 3;
+// Whether a cleared line item's actual has drifted from its plan enough to
+// offer "plan this going forward" — mirrors the backend's driftFor rule
+// (budget.js:217-224): max(configurable cents, 5% of planned).
+function planForwardEligible(item, driftThresholdCents) {
+  if (!item.cleared || item.cleared_amount_cents == null) return false;
+  const planned = item.planned_amount_cents;
+  const actual = item.cleared_amount_cents;
+  if (!planned) return false;
+  if (planned === actual) return false;
+  const threshold = Math.max(driftThresholdCents ?? 500, Math.round(planned * 0.05));
+  return Math.abs(actual - planned) > threshold;
+}
+
+function ItemTable({ title, items, currency, editable, onPatch, plannedTotal, clearedTotal, clearedNote, driftThresholdCents, onPlanForward, registerClearedRef }) {
+  const cols = 5;
   return (
     <div className="period-table">
       <h3>{title}</h3>
+      <div className="table-scroll">
       <table className="table">
         <thead>
           <tr>
-            <th>Category</th>
-            <th className="num">Planned</th>
-            <th className="center">Cleared</th>
+            <th scope="col">Category</th>
+            <th scope="col" className="num">Planned</th>
+            <th scope="col" className="num">Actual</th>
+            <th scope="col" className="center">Cleared</th>
+            <th scope="col"><span className="sr-only">Actions</span></th>
           </tr>
         </thead>
         <tbody>
@@ -94,14 +110,33 @@ function ItemTable({ title, items, currency, editable, onPatch, plannedTotal, cl
                   onSave={(cents, scope) => onPatch(item, { plannedAmountCents: cents, scope })}
                 />
               </td>
+              <td className="num">
+                {item.cleared_amount_cents == null ? (
+                  <span className="muted">—</span>
+                ) : (
+                  fmtMoney(item.cleared_amount_cents, currency)
+                )}
+              </td>
               <td className="center">
                 <input
+                  ref={(el) => registerClearedRef?.(item.category_template_id, el)}
                   type="checkbox" checked={item.cleared} disabled={!editable || item.id == null}
                   title={item.id == null
                     ? 'Set a planned amount first, then you can mark it cleared'
                     : (item.cleared_date ? `Cleared ${fmtDate(item.cleared_date)}` : 'Has this posted to your bank account?')}
                   onChange={(e) => onPatch(item, { cleared: e.target.checked })}
                 />
+              </td>
+              <td>
+                {item.cleared_amount_cents != null && planForwardEligible(item, driftThresholdCents) && (
+                  <button
+                    className="btn btn-ghost btn-small"
+                    onClick={() => onPlanForward(item)}
+                    aria-label={`Plan ${fmtMoney(item.cleared_amount_cents, currency)} going forward for ${item.name}`}
+                  >
+                    Plan {fmtMoney(item.cleared_amount_cents, currency)} going forward
+                  </button>
+                )}
               </td>
             </tr>
           ))}
@@ -114,11 +149,13 @@ function ItemTable({ title, items, currency, editable, onPatch, plannedTotal, cl
           </tr>
           <tr>
             <td>Total cleared{clearedNote ? <span className="muted small"> {clearedNote}</span> : null}</td>
+            <td />
             <td className="num">{fmtMoney(clearedTotal, currency)}</td>
-            <td colSpan={cols - 2} />
+            <td colSpan={cols - 3} />
           </tr>
         </tfoot>
       </table>
+      </div>
     </div>
   );
 }
@@ -298,7 +335,7 @@ function ClosePeriodDialog({ period, currency, accountId, accountName, onCancel,
   );
 }
 
-function PeriodColumn({ data, currency, userEmail, tags, accountName, onChanged }) {
+function PeriodColumn({ data, currency, userEmail, tags, accountName, driftThresholdCents, onChanged }) {
   const { period, expenses, income, transactions, summary } = data;
   const accountId = data.accountId;
   const editable = period.editable;
@@ -306,6 +343,9 @@ function PeriodColumn({ data, currency, userEmail, tags, accountName, onChanged 
   const [badgeClass, badgeLabel, badgeTitle] = STATUS_BADGES[period.status] || STATUS_BADGES.projected;
   const closeBtnRef = useRef(null);
   const headRef = useRef(null);
+  const clearedRefs = useRef(new Map());
+  const planNoticeRef = useRef(null);
+  const [planNotice, setPlanNotice] = useState(null);
 
   // Restore focus to whatever triggered the dialog's opening. On a plain
   // cancel/escape/backdrop close nothing about the period changes, so the
@@ -343,6 +383,29 @@ function PeriodColumn({ data, currency, userEmail, tags, accountName, onChanged 
   const deleteTxn = async (id) => {
     await api(`/transactions/${id}`, { method: 'DELETE' });
     onChanged();
+  };
+  // Reuses the same mechanism as DriftNotices.jsx's "Plan {amount} going
+  // forward" — rolls the recurring plan forward to what actually cleared.
+  // The row's "Plan … going forward" button vanishes once the reload commits
+  // (the item is no longer drifting, so planForwardEligible goes false), so —
+  // same problem as returnFocus/finishClosing above — focus would otherwise
+  // fall through to <body>. The row's Cleared checkbox is the stable element
+  // that survives the repricing, so land there; fall back to the notice
+  // (which also announces the change to assistive tech) if it's ever gone.
+  const planForward = async (item) => {
+    const key = item.category_template_id;
+    const amountLabel = fmtMoney(item.cleared_amount_cents, currency);
+    await api(`/categories/${item.category_template_id}/amounts`, {
+      method: 'POST',
+      body: { amountCents: item.cleared_amount_cents, effectiveStartDate: item.cleared_date },
+    });
+    setPlanNotice(`Plan updated to ${amountLabel} going forward`);
+    await onChanged();
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      const node = clearedRefs.current.get(key);
+      if (node?.isConnected) node.focus();
+      else planNoticeRef.current?.focus();
+    }));
   };
   const reopen = async () => {
     const ok = window.confirm(
@@ -437,17 +500,27 @@ function PeriodColumn({ data, currency, userEmail, tags, accountName, onChanged 
         />
       )}
 
+      {planNotice && (
+        <p className="form-ok small" ref={planNoticeRef} tabIndex={-1} role="status" aria-live="polite">{planNotice}</p>
+      )}
+
       <ItemTable
         title="Planned Income" items={income} currency={currency} editable={editable} onPatch={patchItem}
         plannedTotal={summary?.plannedIncome ?? 0}
         clearedTotal={summary?.clearedIncome ?? 0}
         clearedNote="(cleared items + misc income)"
+        driftThresholdCents={driftThresholdCents}
+        onPlanForward={planForward}
+        registerClearedRef={(key, el) => clearedRefs.current.set(key, el)}
       />
       <ItemTable
         title="Planned Expenses" items={expenses} currency={currency} editable={editable} onPatch={patchItem}
         plannedTotal={summary?.plannedExpenses ?? 0}
         clearedTotal={summary?.clearedExpenses ?? 0}
         clearedNote="(cleared items + misc transactions)"
+        driftThresholdCents={driftThresholdCents}
+        onPlanForward={planForward}
+        registerClearedRef={(key, el) => clearedRefs.current.set(key, el)}
       />
 
       <section className="card period-misc">
@@ -639,6 +712,7 @@ export default function PeriodDetail() {
                 userEmail={user.email}
                 tags={tags}
                 accountName={base.find((a) => a.id === data.accountId)?.name}
+                driftThresholdCents={user.driftThresholdCents}
                 onChanged={load}
               />
             ))}

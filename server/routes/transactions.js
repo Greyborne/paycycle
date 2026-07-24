@@ -3,7 +3,7 @@ import { q } from '../db.js';
 import { bad, requireCents, requireDate, requireId } from '../validation.js';
 import {
   getConfig, ensureMaterialized, getDefaultAccountId, loadTemplates, driftFor,
-  clearLineItemForTransaction,
+  clearLineItemForTransaction, recomputeLineItemActual,
 } from '../services/budget.js';
 import { loadRules, firstMatchingCategory } from '../services/rules.js';
 import { todayISO } from '../services/schedule.js';
@@ -147,6 +147,17 @@ async function assignCategory(budget, templatesById, txn, categoryId, provenance
     `UPDATE transactions SET category_template_id = $1, type = $2, categorized_by = $3 WHERE id = $4`,
     [categoryId, template ? template.type : txn.type, provenanceValue, txn.id]
   );
+
+  // This transaction no longer counts toward the OLD template's line item
+  // (un-categorized, or moved to a different category) - recompute that
+  // item's cleared_amount_cents so it drops by this transaction's share.
+  // Recomputing (not subtracting) yields NULL, not 0, when nothing is left,
+  // per the column's NULL-vs-0 contract. Skipped when the category didn't
+  // actually change (oldTemplate.id === categoryId) since nothing moved, and
+  // when the old category wasn't recurring (tag/none has no line item).
+  if (oldTemplate?.category_type === 'recurring' && oldTemplate.id !== categoryId && txn.pay_period_id) {
+    await recomputeLineItemActual({ query: q }, txn.pay_period_id, oldTemplate.id);
+  }
 
   let drift = null;
   if (template?.category_type === 'recurring' && txn.pay_period_id) {

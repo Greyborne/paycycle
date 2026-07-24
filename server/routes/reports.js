@@ -30,7 +30,7 @@ router.get('/summary', async (req, res, next) => {
       `SELECT ct.id AS category_id, ct.name, ct.type, ct.account_id, ct.sort_order,
               EXTRACT(MONTH FROM pp.start_date)::int AS month,
               COALESCE(SUM(li.planned_amount_cents), 0) AS planned,
-              COALESCE(SUM(li.planned_amount_cents) FILTER (WHERE li.cleared), 0) AS cleared
+              COALESCE(SUM(COALESCE(li.cleared_amount_cents, li.planned_amount_cents)) FILTER (WHERE li.cleared), 0) AS cleared
        FROM line_items li
        JOIN pay_periods pp ON pp.id = li.pay_period_id
        JOIN category_templates ct ON ct.id = li.category_template_id

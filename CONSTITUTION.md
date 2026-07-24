@@ -134,6 +134,17 @@ something folded silently into a feature or layout build.
     `var(--border-strong)`, `--radius-ctl`; focus = 2px `var(--accent)`.
   - `.table`: uppercase muted header on `--surface-2`, `--grid` row
     borders, right-aligned `.num` cells with tabular figures.
+  - **A `.num` cell holds a figure and nothing else.** Per-row actions go
+    in their own trailing Actions column, headed
+    `<th><span className="sr-only">Actions</span></th>`, with a
+    `.btn-ghost.btn-small` control. Never embed a button in a money cell:
+    its label width varies per row, so the browser sizes the column to the
+    widest one, destroying the tabular rhythm `.num` exists to provide and
+    stealing width from the label column.
+  - **Any table wide enough to overflow goes in `.table-scroll`.** The page
+    itself must never scroll horizontally (§5); the table scrolls inside
+    its own card instead. Adding a column to an existing table means
+    re-checking this at the narrowest supported width.
   - `.badge` pills; `.stat` / `.totals-grid` summary tiles on
     `--surface-2`.
 - **Aesthetic direction (boss taste call):** dark-charcoal-first with a
@@ -250,6 +261,23 @@ This constitution is the standard until the boss explicitly revises it
 here, dated. A checker's FAIL is not overridden by a worker's — or the
 boss's — say-so: disputes are resolved by re-reading this file and ruling
 explicitly, in writing, before continuing.
+
+- **2026-07-23 — Table actions and horizontal overflow.** Added two §4
+  component-pattern rules ahead of the planned-vs-actual build
+  (`docs/plans/planned-vs-actual.md`), both from defects that build
+  actually produced. A "Plan {amount} going forward" button was first
+  built inside the Actual `.num` cell; because its label embeds a
+  formatted amount, its width varied per row and sized the whole column,
+  contradicting the tabular-figures rule. Separately, going from three
+  columns to five made the period table overflow 375px and scroll the
+  **page** — caught only because the checker built the pre-change version
+  and measured it, proving a regression rather than assuming one. Both
+  rules are written as prohibitions because in each case the mistake
+  looked reasonable while being made. Boss-approved.
+
+  Not settled here: `AccountsCard.jsx` centers its Actions cell and
+  `Transactions.jsx` does not. Both are permitted; pick one when either
+  table is next touched rather than churning a passing table now.
 
 - **2026-07-15 — Account-first pay periods.** Added §6 "Data migration /
   integrity" check and the §5 no-silent-financial-loss invariant ahead of

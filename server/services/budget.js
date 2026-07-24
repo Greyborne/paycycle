@@ -95,8 +95,8 @@ export async function accountBalances(budgetId) {
      FROM accounts a
      LEFT JOIN (
        SELECT li.account_id,
-              COALESCE(SUM(li.planned_amount_cents) FILTER (WHERE ct.type = 'income' AND li.cleared), 0)  AS cleared_income,
-              COALESCE(SUM(li.planned_amount_cents) FILTER (WHERE ct.type = 'expense' AND li.cleared), 0) AS cleared_expenses
+              COALESCE(SUM(COALESCE(li.cleared_amount_cents, li.planned_amount_cents)) FILTER (WHERE ct.type = 'income' AND li.cleared), 0)  AS cleared_income,
+              COALESCE(SUM(COALESCE(li.cleared_amount_cents, li.planned_amount_cents)) FILTER (WHERE ct.type = 'expense' AND li.cleared), 0) AS cleared_expenses
        FROM line_items li
        JOIN category_templates ct ON ct.id = li.category_template_id
        JOIN pay_periods pp ON pp.id = li.pay_period_id
@@ -224,6 +224,45 @@ export function driftFor(budget, template, amountCents, date) {
   return { categoryTemplateId: template.id, name: template.name, plannedCents: planned, actualCents: actual, date };
 }
 
+// The actual amount a line item's `cleared_amount_cents` should carry: the
+// SUM of every transaction categorized to that template in that period, not
+// just the transaction that happens to be clearing it right now - a second
+// transaction can later land on the same category/period (e.g. a refund, a
+// correction, a split bill). Recomputed from `transactions` on every call
+// rather than accumulated onto the stored value, so it is idempotent no
+// matter how many times (or in what order) a period's items get re-cleared
+// or re-assigned - accumulating would double-count a re-clear of an
+// already-cleared item. `transactions.amount_cents` is already stored
+// non-negative (every writer Math.abs()'s it before insert - see
+// import.js/transactions.js/simplefin.js), matching the convention this
+// module already uses for `cleared_amount_cents`, so a plain SUM needs no
+// sign handling. Returns null (not 0) when there are no matching
+// transactions - "cleared with unknown actual," never "cleared at zero" -
+// per the column's documented NULL-vs-0 contract (migration 015).
+async function recomputeClearedAmount(dbc, periodId, categoryTemplateId) {
+  const { rows } = await dbc.query(
+    `SELECT COALESCE(SUM(amount_cents), 0) AS total, COUNT(*)::int AS cnt
+     FROM transactions WHERE pay_period_id = $1 AND category_template_id = $2`,
+    [periodId, categoryTemplateId]
+  );
+  return rows[0].cnt > 0 ? Number(rows[0].total) : null;
+}
+
+// Recompute and persist `cleared_amount_cents` on the (periodId,
+// categoryTemplateId) line item, if one exists. Exported for the
+// un-assignment path (server/routes/transactions.js): when a transaction
+// moves off a template, that template's own line item must drop back down
+// (or to NULL if nothing is left), which is the same recompute
+// clearLineItemForTransaction uses for the newly-assigned side.
+export async function recomputeLineItemActual(dbc, periodId, categoryTemplateId) {
+  const clearedAmount = await recomputeClearedAmount(dbc, periodId, categoryTemplateId);
+  await dbc.query(
+    'UPDATE line_items SET cleared_amount_cents = $1 WHERE pay_period_id = $2 AND category_template_id = $3',
+    [clearedAmount, periodId, categoryTemplateId]
+  );
+  return clearedAmount;
+}
+
 // Clear the line item for a recurring category when a matching transaction
 // posts. Bills sometimes post in the period after the one they were planned
 // in (due 7/2, period ends 7/3, actually posts 7/5): when the transaction's
@@ -231,14 +270,25 @@ export function driftFor(budget, template, amountCents, date) {
 // forward — the original period keeps a $0 cleared marker and the
 // transaction's period gains the item. The category's due date is never
 // touched. `dbc` lets callers run inside their own transaction.
+//
+// `cleared_amount_cents` is always set here from `recomputeClearedAmount`
+// (the SUM of transactions.amount_cents for this period+template), which
+// requires the transaction whose posting triggered this call to already be
+// inserted (in the same `dbc`/transaction) before this function runs - true
+// for all three callers (import.js, simplefin.js's insertSyncedTxn,
+// transactions.js's assignCategory), verified at each call site.
+// `updatePlanned` is unrelated and unchanged: it still only controls whether
+// `planned_amount_cents` itself gets snapped to this one transaction's
+// amount (the budget figure), never `cleared_amount_cents` (the actual).
 export async function clearLineItemForTransaction(dbc, template, { periodId, date, amountCents, accountId, updatePlanned = false }) {
   const amount = Math.abs(amountCents);
-  const setPlanned = updatePlanned ? ', planned_amount_cents = $5' : '';
+  const clearedAmount = await recomputeClearedAmount(dbc, periodId, template.id);
+  const setPlanned = updatePlanned ? ', planned_amount_cents = $6' : '';
   const params = updatePlanned
-    ? [date, periodId, template.id, accountId, amount]
-    : [date, periodId, template.id, accountId];
+    ? [date, periodId, template.id, accountId, clearedAmount, amount]
+    : [date, periodId, template.id, accountId, clearedAmount];
   const { rowCount } = await dbc.query(
-    `UPDATE line_items SET cleared = TRUE, cleared_date = $1, account_id = COALESCE($4, account_id)${setPlanned}
+    `UPDATE line_items SET cleared = TRUE, cleared_date = $1, account_id = COALESCE($4, account_id), cleared_amount_cents = $5${setPlanned}
      WHERE pay_period_id = $2 AND category_template_id = $3`,
     params
   );
@@ -260,17 +310,23 @@ export async function clearLineItemForTransaction(dbc, template, { periodId, dat
   let planned = amount; // unplanned extra occurrence: the actual is all we know
   if (prior.length) {
     planned = updatePlanned ? amount : prior[0].planned_amount_cents;
+    // The zeroed prior row is a bookkeeping marker, not a record of an
+    // actual transaction - the real transaction belongs to (and its amount
+    // is attributed to) the period the occurrence moved to, below. Setting
+    // cleared_amount_cents to NULL (not left stale, not 0) keeps that row
+    // from wrongly claiming an actual of its own; it falls back to its own
+    // planned_amount_cents (0) in the balance math either way.
     await dbc.query(
-      'UPDATE line_items SET planned_amount_cents = 0, cleared = TRUE, cleared_date = $1 WHERE id = $2',
+      'UPDATE line_items SET planned_amount_cents = 0, cleared = TRUE, cleared_date = $1, cleared_amount_cents = NULL WHERE id = $2',
       [date, prior[0].id]
     );
   }
   await dbc.query(
-    `INSERT INTO line_items (pay_period_id, category_template_id, planned_amount_cents, account_id, cleared, cleared_date)
-     VALUES ($1, $2, $3, $4, TRUE, $5)
+    `INSERT INTO line_items (pay_period_id, category_template_id, planned_amount_cents, account_id, cleared, cleared_date, cleared_amount_cents)
+     VALUES ($1, $2, $3, $4, TRUE, $5, $6)
      ON CONFLICT (pay_period_id, category_template_id)
-     DO UPDATE SET cleared = TRUE, cleared_date = $5`,
-    [periodId, template.id, planned, accountId ?? template.account_id ?? null, date]
+     DO UPDATE SET cleared = TRUE, cleared_date = $5, cleared_amount_cents = $6`,
+    [periodId, template.id, planned, accountId ?? template.account_id ?? null, date, clearedAmount]
   );
   return { cleared: true, moved: prior.length > 0 };
 }
@@ -462,9 +518,9 @@ async function materializedSummaries(budgetId, scope = null, dbc = { query: q })
   const { rows: periods } = await dbc.query(
     `SELECT pp.id, pp.start_date, pp.end_date,
             COALESCE(SUM(li.planned_amount_cents) FILTER (WHERE ct.type = 'expense'), 0)                  AS planned_expenses,
-            COALESCE(SUM(li.planned_amount_cents) FILTER (WHERE ct.type = 'expense' AND li.cleared), 0)   AS cleared_expense_items,
+            COALESCE(SUM(COALESCE(li.cleared_amount_cents, li.planned_amount_cents)) FILTER (WHERE ct.type = 'expense' AND li.cleared), 0)   AS cleared_expense_items,
             COALESCE(SUM(li.planned_amount_cents) FILTER (WHERE ct.type = 'income'), 0)                   AS planned_income,
-            COALESCE(SUM(li.planned_amount_cents) FILTER (WHERE ct.type = 'income' AND li.cleared), 0)    AS cleared_income_items,
+            COALESCE(SUM(COALESCE(li.cleared_amount_cents, li.planned_amount_cents)) FILTER (WHERE ct.type = 'income' AND li.cleared), 0)    AS cleared_income_items,
             COUNT(li.id) AS item_count
      FROM pay_periods pp
      LEFT JOIN line_items li ON li.pay_period_id = pp.id ${acctFilter}
@@ -823,7 +879,7 @@ export async function getPeriodDetail(budget, cfg, startDate, accountId = null) 
     const scopeParams = scope ? [scope.defaultId, scope.accountId] : [];
     const { rows: items } = await q(
       `SELECT li.id, li.category_template_id, li.planned_amount_cents, li.cleared, li.cleared_date,
-              li.account_id, ct.name, ct.type, ct.sort_order, ct.recurrence, ct.due_day
+              li.cleared_amount_cents, li.account_id, ct.name, ct.type, ct.sort_order, ct.recurrence, ct.due_day
        FROM line_items li JOIN category_templates ct ON ct.id = li.category_template_id
        WHERE li.pay_period_id = $1 ${itemFilter} ORDER BY ct.sort_order, ct.id`,
       [periodRow.id, ...scopeParams]
@@ -845,6 +901,7 @@ export async function getPeriodDetail(budget, cfg, startDate, accountId = null) 
         planned_amount_cents: 0,
         cleared: false,
         cleared_date: null,
+        cleared_amount_cents: null,
         account_id: t.account_id,
         name: t.name,
         type: t.type,
@@ -913,6 +970,7 @@ export async function getPeriodDetail(budget, cfg, startDate, accountId = null) 
         planned_amount_cents: planned,
         cleared: preHistory && planned !== 0,
         cleared_date: null,
+        cleared_amount_cents: null,
         name: t.name,
         type: t.type,
         sort_order: t.sort_order,
