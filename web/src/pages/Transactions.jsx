@@ -4,6 +4,7 @@ import { api } from '../api.js';
 import { useAuth } from '../App.jsx';
 import { fmtDate, fmtMoney } from '../format.js';
 import { useAccounts } from '../useAccounts.js';
+import { categoriesForAccount, categoriesForAccounts } from '../categoryScope.js';
 import DriftNotices from '../components/DriftNotices.jsx';
 import RuleDrawer from '../components/RuleDrawer.jsx';
 
@@ -11,20 +12,24 @@ function CategorySelect({ value, categories, onChange, disabled, ariaLabel }) {
   const group = (type, categoryType) => categories
     .filter((c) => !c.archived && c.type === type && c.categoryType === categoryType);
   const renderOptions = (list) => list.map((c) => <option key={c.id} value={c.id}>{c.name}</option>);
+  const recurring = [...group('expense', 'recurring'), ...group('income', 'recurring')];
+  const tags = [...group('expense', 'tag'), ...group('income', 'tag')];
   return (
     <select
       value={value ?? ''} disabled={disabled} aria-label={ariaLabel}
       onChange={(e) => onChange(e.target.value ? Number(e.target.value) : null)}
     >
       <option value="">Uncategorized</option>
-      <optgroup label="Bills & income (recurring)">
-        {renderOptions(group('expense', 'recurring'))}
-        {renderOptions(group('income', 'recurring'))}
-      </optgroup>
-      <optgroup label="Tags (one-off)">
-        {renderOptions(group('expense', 'tag'))}
-        {renderOptions(group('income', 'tag'))}
-      </optgroup>
+      {recurring.length > 0 && (
+        <optgroup label="Bills & income (recurring)">
+          {renderOptions(recurring)}
+        </optgroup>
+      )}
+      {tags.length > 0 && (
+        <optgroup label="Tags (one-off)">
+          {renderOptions(tags)}
+        </optgroup>
+      )}
     </select>
   );
 }
@@ -39,7 +44,13 @@ const SORTS = {
 
 export default function Transactions() {
   const { user } = useAuth();
-  const { active: accounts } = useAccounts();
+  const { accounts: rawAccounts, active: accounts, base } = useAccounts();
+  // Mirrors the backend's default-account fallback (server/services/budget.js
+  // getDefaultAccountId): prefer the isDefault, non-archived, base-currency
+  // account; else the first base-currency account by sort order. `base` is
+  // already filtered to active (non-archived) + base-currency accounts and
+  // ordered by sort_order (the API returns accounts sorted that way).
+  const defaultAccountId = (base.find((a) => a.isDefault) ?? base[0])?.id ?? null;
   const [txns, setTxns] = useState(null);
   const [categories, setCategories] = useState([]);
   const [filters, setFilters] = useState({ from: '', to: '', account: '', category: '', search: '' });
@@ -83,7 +94,10 @@ export default function Transactions() {
   }, [txns, sort]);
 
   if (error) return <div className="transactions-page"><p className="form-error">{error}</p></div>;
-  if (!sorted) return <div className="transactions-page"><div className="page-loading">Loading…</div></div>;
+  // Wait on accounts too: category scoping needs defaultAccountId to be
+  // resolved before any category picker renders, or a NULL-account category
+  // would briefly look like it belongs to no account at all.
+  if (!sorted || !rawAccounts) return <div className="transactions-page"><div className="page-loading">Loading…</div></div>;
 
   const clickSort = (key) => setSort((s) => ({ key, dir: s.key === key ? -s.dir : key === 'date' ? -1 : 1 }));
   const arrow = (key) => (sort.key === key ? (sort.dir > 0 ? ' ↑' : ' ↓') : '');
@@ -148,6 +162,11 @@ export default function Transactions() {
     setSelected(next);
   };
   const allSelected = sorted.length > 0 && sorted.every((t) => selected.has(t.id));
+  // Bulk assignment can span accounts: only offer categories valid for EVERY
+  // selected transaction's account (the intersection), so an assignment can
+  // never attach a line item to the wrong account.
+  const selectedAccountIds = sorted.filter((t) => selected.has(t.id)).map((t) => t.account_id);
+  const bulkCategories = categoriesForAccounts(categories, selectedAccountIds, defaultAccountId);
 
   const setFilter = (k, v) => setFilters((f) => ({ ...f, [k]: v }));
   const provenance = (t) => {
@@ -203,10 +222,22 @@ export default function Transactions() {
           <div className="bulk-bar">
             <span className="small"><strong>{selected.size}</strong> selected</span>
             <CategorySelect
-              value={bulkCategory} categories={categories} ariaLabel="Bulk category"
+              value={bulkCategory} categories={bulkCategories} ariaLabel="Bulk category"
               onChange={setBulkCategory}
             />
-            <button className="btn" onClick={() => assign([...selected], bulkCategory)}>Assign</button>
+            <button
+              className="btn" disabled={bulkCategories.length === 0}
+              title={bulkCategories.length === 0 ? 'Selected transactions span accounts with no categories in common' : undefined}
+              aria-describedby={bulkCategories.length === 0 ? 'bulk-assign-disabled-reason' : undefined}
+              onClick={() => assign([...selected], bulkCategory)}
+            >
+              Assign
+            </button>
+            {bulkCategories.length === 0 && (
+              <span id="bulk-assign-disabled-reason" className="small muted">
+                Selected transactions span accounts with no categories in common
+              </span>
+            )}
             <button className="btn btn-ghost" onClick={bulkDelete}>Delete</button>
           </div>
         )}
@@ -248,7 +279,8 @@ export default function Transactions() {
                     <td>{t.description || <span className="muted">—</span>}</td>
                     <td>
                       <CategorySelect
-                        value={t.category_template_id} categories={categories}
+                        value={t.category_template_id}
+                        categories={categoriesForAccount(categories, t.account_id, defaultAccountId)}
                         ariaLabel={`Category for ${t.description || 'transaction'}`}
                         onChange={(categoryId) => assign([t.id], categoryId)}
                       />
@@ -301,7 +333,7 @@ export default function Transactions() {
         <RuleDrawer
           key={ruleDrawerTxn.id}
           txn={ruleDrawerTxn}
-          categories={categories}
+          categories={categoriesForAccount(categories, ruleDrawerTxn.account_id, defaultAccountId)}
           currency={ruleDrawerTxn.account_currency || user.currency}
           onClose={closeRuleDrawer}
           onApplied={applyRuleDrawer}

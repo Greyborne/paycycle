@@ -29,17 +29,21 @@ function CategoryOptions({ categories }) {
   const group = (type, categoryType) => categories
     .filter((c) => !c.archived && c.type === type && c.categoryType === categoryType);
   const renderOptions = (list) => list.map((c) => <option key={c.id} value={c.id}>{c.name}</option>);
+  const recurring = [...group('expense', 'recurring'), ...group('income', 'recurring')];
+  const tags = [...group('expense', 'tag'), ...group('income', 'tag')];
   return (
     <>
       <option value="">Choose a category…</option>
-      <optgroup label="Bills & income (recurring)">
-        {renderOptions(group('expense', 'recurring'))}
-        {renderOptions(group('income', 'recurring'))}
-      </optgroup>
-      <optgroup label="Tags (one-off)">
-        {renderOptions(group('expense', 'tag'))}
-        {renderOptions(group('income', 'tag'))}
-      </optgroup>
+      {recurring.length > 0 && (
+        <optgroup label="Bills & income (recurring)">
+          {renderOptions(recurring)}
+        </optgroup>
+      )}
+      {tags.length > 0 && (
+        <optgroup label="Tags (one-off)">
+          {renderOptions(tags)}
+        </optgroup>
+      )}
     </>
   );
 }
