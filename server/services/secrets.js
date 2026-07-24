@@ -1,9 +1,10 @@
 import crypto from 'node:crypto';
 import { config } from '../config.js';
 
-// At-rest encryption for third-party secrets (Plaid access tokens). AES-256-
-// GCM keyed off the instance's session secret — rotating that secret means
-// relinking banks, which is the right failure mode for a self-hosted tool.
+// At-rest encryption for third-party secrets (SimpleFIN access URLs). AES-
+// 256-GCM keyed off the instance's session secret — rotating that secret
+// means relinking banks, which is the right failure mode for a self-hosted
+// tool.
 const PREFIX = 'enc:v1:';
 const key = () => crypto.createHash('sha256').update(`paycycle-secrets:${config.sessionSecret}`).digest();
 

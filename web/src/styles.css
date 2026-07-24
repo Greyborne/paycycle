@@ -656,8 +656,12 @@ input.category-name:hover, input.category-name:focus { border-color: var(--borde
 .settings-page .card { max-width: 720px; }
 
 /* ---------- import & reports ---------- */
+/* .mono-input: opt-in monospace treatment for textareas holding raw/opaque
+   text (pasted CSV, setup tokens). Layers on top of the shared form-control
+   rule above (input/select/textarea) — do not use a bare element selector
+   here, it applies to every textarea in the app. */
 
-textarea { font-family: ui-monospace, monospace; font-size: 0.85rem; resize: vertical; }
+.mono-input { font-family: ui-monospace, monospace; font-size: 0.85rem; resize: vertical; }
 
 .table-scroll { overflow-x: auto; }
 .row-muted { opacity: 0.45; }
@@ -737,8 +741,8 @@ textarea { font-family: ui-monospace, monospace; font-size: 0.85rem; resize: ver
 .severity-warning .severity-dot { background: var(--warning-ink); }
 .severity-critical .severity-dot { background: var(--critical); }
 
-.plaid-item { border-top: 1px solid var(--grid); padding: 0.6rem 0; }
-.plaid-account-name { font-weight: 600; }
+.bank-connection { border-top: 1px solid var(--grid); padding: 0.6rem 0; }
+.bank-account-name { font-weight: 600; }
 
 .sso-divider {
   display: flex;

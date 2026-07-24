@@ -3,66 +3,43 @@ import { api } from '../api.js';
 import { useAccounts } from '../useAccounts.js';
 import { fmtDate } from '../format.js';
 
-const PLAID_SCRIPT = 'https://cdn.plaid.com/link/v2/stable/link-initialize.js';
+const TOKEN_HELP_ID = 'simplefin-token-help';
 
-function loadPlaidScript() {
-  return new Promise((resolve, reject) => {
-    if (window.Plaid) return resolve();
-    const el = document.createElement('script');
-    el.src = PLAID_SCRIPT;
-    el.onload = resolve;
-    el.onerror = () => reject(new Error('Could not load Plaid Link'));
-    document.head.appendChild(el);
-  });
-}
-
-// Live bank sync via Plaid. Hidden entirely unless the server has Plaid
-// credentials configured. Synced transactions reuse the import pipeline:
-// duplicate-safe, auto-categorized by learned rules, rule matches clear the
-// period's line item.
+// Live bank sync via SimpleFIN Bridge. Opt-in via BANK_SYNC_ENABLED - the
+// card renders nothing until /simplefin/status reports enabled: true. Synced
+// transactions reuse the import pipeline: duplicate-safe, auto-categorized by
+// learned rules, rule matches clear the period's line item.
 export default function BankSync() {
   const { base: baseAccounts } = useAccounts();
   const [status, setStatus] = useState(null);
+  const [setupToken, setSetupToken] = useState('');
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState(null);
   const [error, setError] = useState(null);
 
   const load = useCallback(async () => {
-    setStatus(await api('/plaid/status'));
+    setStatus(await api('/simplefin/status'));
   }, []);
 
   useEffect(() => { load(); }, [load]);
 
-  if (!status?.enabled) return null;
+  if (!status || !status.enabled) return null;
 
-  const connect = async () => {
+  const connect = async (e) => {
+    e.preventDefault();
+    const trimmed = setupToken.trim();
+    if (!trimmed) return;
     setBusy(true);
     setError(null);
     setMessage(null);
     try {
-      const { linkToken } = await api('/plaid/link-token', { method: 'POST' });
-      await loadPlaidScript();
-      const handler = window.Plaid.create({
-        token: linkToken,
-        onSuccess: async (publicToken, metadata) => {
-          try {
-            await api('/plaid/exchange', {
-              method: 'POST',
-              body: { publicToken, institutionName: metadata?.institution?.name },
-            });
-            setMessage('Bank connected — choose which PayCycle account each bank account syncs into, then hit Sync.');
-            await load();
-          } catch (err) {
-            setError(err.message);
-          } finally {
-            setBusy(false);
-          }
-        },
-        onExit: () => setBusy(false),
-      });
-      handler.open();
+      await api('/simplefin/claim', { method: 'POST', body: { setupToken: trimmed } });
+      setSetupToken('');
+      setMessage('Bank connected — choose which PayCycle account each bank account syncs into, then hit Sync.');
+      await load();
     } catch (err) {
       setError(err.message);
+    } finally {
       setBusy(false);
     }
   };
@@ -70,7 +47,7 @@ export default function BankSync() {
   const setMapping = async (linkId, accountId) => {
     setError(null);
     try {
-      await api(`/plaid/links/${linkId}`, {
+      await api(`/simplefin/links/${linkId}`, {
         method: 'PATCH',
         body: { accountId: accountId ? Number(accountId) : null },
       });
@@ -85,17 +62,13 @@ export default function BankSync() {
     setError(null);
     setMessage(null);
     try {
-      const r = await api('/plaid/sync', { method: 'POST' });
-      if (r.notReady) {
-        setMessage('The bank is still preparing transaction history — try again in a minute.');
-      } else {
-        setMessage(
-          `Sync complete: ${r.added} new, ${r.cleared} line items cleared, ${r.updated} updated, ` +
-          `${r.removed} removed${r.duplicates ? `, ${r.duplicates} already imported` : ''}` +
-          `${r.replanned ? `, ${r.replanned} recurring plan(s) updated going forward` : ''}` +
-          `${r.skipped ? `, ${r.skipped} outside your recorded periods` : ''}.`
-        );
-      }
+      const r = await api('/simplefin/sync', { method: 'POST' });
+      setMessage(
+        `Sync complete: ${r.added} new, ${r.cleared} line items cleared, ${r.updated} updated` +
+        `${r.duplicates ? `, ${r.duplicates} already imported` : ''}` +
+        `${r.replanned ? `, ${r.replanned} recurring plan(s) updated going forward` : ''}` +
+        `${r.skipped ? `, ${r.skipped} outside your recorded periods` : ''}.`
+      );
       await load();
     } catch (err) {
       setError(err.message);
@@ -104,42 +77,46 @@ export default function BankSync() {
     }
   };
 
-  const unlink = async (itemId) => {
+  const unlink = async (connectionId) => {
     if (!window.confirm('Disconnect this bank? Already-synced transactions stay in your budget.')) return;
-    await api(`/plaid/items/${itemId}`, { method: 'DELETE' });
+    await api(`/simplefin/connections/${connectionId}`, { method: 'DELETE' });
     load();
   };
+
+  const hasConnections = status.connections.length > 0;
 
   return (
     <section className="card">
       <div className="card-head">
         <h2>Bank sync</h2>
-        {status.environment !== 'production' && (
-          <span className="badge health-none">{status.environment} mode</span>
-        )}
       </div>
       <p className="muted small">
-        Connect your bank through Plaid and pull posted transactions straight into your budget.
-        Learned import rules categorize them automatically; matched bills are marked cleared.
+        Connect your bank through SimpleFIN and pull posted transactions straight into
+        your budget. Learned import rules categorize them automatically; matched bills
+        are marked cleared.
       </p>
 
-      {status.items.map((item) => (
-        <div key={item.id} className="plaid-item">
+      {status.connections.map((connection) => (
+        <div key={connection.id} className="bank-connection">
           <div className="card-head">
-            <strong>{item.institution}</strong>
+            <strong>{connection.label}</strong>
             <span className="muted small">
-              {item.lastSyncedAt ? `last synced ${fmtDate(item.lastSyncedAt.slice(0, 10))}` : 'never synced'}
+              {connection.lastSyncedAt ? `last synced ${fmtDate(connection.lastSyncedAt.slice(0, 10))}` : 'never synced'}
               {' '}
-              <button className="btn btn-ghost btn-small" onClick={() => unlink(item.id)}>Disconnect</button>
+              <button className="btn btn-ghost btn-small" onClick={() => unlink(connection.id)}>Disconnect</button>
             </span>
           </div>
-          {item.accounts.map((a) => (
+          {connection.accounts.map((a) => (
             <div key={a.id} className="quick-add">
-              <span className="plaid-account-name">
-                {a.name}{a.mask ? ` ••${a.mask}` : ''}
+              <span className="bank-account-name">
+                {a.name}{a.org ? ` · ${a.org}` : ''}
               </span>
               <span className="muted small">syncs into</span>
-              <select value={a.accountId ?? ''} onChange={(e) => setMapping(a.id, e.target.value)}>
+              <select
+                value={a.accountId ?? ''}
+                onChange={(e) => setMapping(a.id, e.target.value)}
+                aria-label={`Account for ${a.name}`}
+              >
                 <option value="">Not synced</option>
                 {baseAccounts.map((acct) => (
                   <option key={acct.id} value={acct.id}>{acct.name}</option>
@@ -150,14 +127,36 @@ export default function BankSync() {
         </div>
       ))}
 
-      <div className="quick-add">
-        <button className="btn btn-primary" disabled={busy} onClick={connect}>
-          {status.items.length ? '+ Connect another bank' : 'Connect a bank'}
-        </button>
-        {status.items.some((i) => i.accounts.some((a) => a.accountId)) && (
+      {!hasConnections && (
+        <p className="muted small" id={TOKEN_HELP_ID}>
+          Get a setup token from your SimpleFIN Bridge account, then paste it below. The
+          token is used once and never stored — PayCycle keeps only the access URL it
+          returns, encrypted.
+        </p>
+      )}
+
+      <form onSubmit={connect}>
+        <label htmlFor="simplefin-setup-token">Setup token</label>
+        <textarea
+          id="simplefin-setup-token"
+          className="mono-input"
+          value={setupToken}
+          onChange={(e) => setSetupToken(e.target.value)}
+          aria-describedby={hasConnections ? undefined : TOKEN_HELP_ID}
+          rows={3}
+        />
+        <div className="quick-add">
+          <button className="btn btn-primary" type="submit" disabled={busy || !setupToken.trim()}>
+            {hasConnections ? '+ Connect another bank' : 'Connect a bank'}
+          </button>
+        </div>
+      </form>
+
+      {status.connections.some((c) => c.accounts.some((a) => a.accountId)) && (
+        <div className="quick-add">
           <button className="btn btn-primary" disabled={busy} onClick={sync}>Sync now</button>
-        )}
-      </div>
+        </div>
+      )}
       {message && <p className="form-ok" role="status">{message}</p>}
       {error && <p className="form-error" role="alert">{error}</p>}
     </section>
