@@ -199,7 +199,8 @@ Before upgrading, check the release notes — some releases ship one-way databas
 migrations. Always back up first:
 
 ```bash
-docker compose exec -T db pg_dump -U paycycle -d paycycle --clean --if-exists | gzip > paycycle-backup-$(date +%F).sql.gz
+docker compose exec -T db pg_dump -U paycycle -d paycycle --clean --if-exists \
+  | gzip > ~/paycycle-backup-$(date +%F).sql.gz
 ```
 
 For releases with migrations, follow the version-specific guide:
@@ -212,16 +213,17 @@ For releases with migrations, follow the version-specific guide:
 All persistent state lives in the `paycycle-db` named volume. To back up:
 
 ```bash
-docker compose exec -T db pg_dump -U paycycle -d paycycle --clean --if-exists | gzip > paycycle-backup-$(date +%F).sql.gz
+docker compose exec -T db pg_dump -U paycycle -d paycycle --clean --if-exists \
+  | gzip > ~/paycycle-backup-$(date +%F).sql.gz
 ```
 
 To restore:
 
 ```bash
-gunzip -c paycycle-backup-YYYY-MM-DD.sql.gz | docker compose exec -T db psql -U paycycle paycycle
+gunzip -c ~/paycycle-backup-YYYY-MM-DD.sql.gz | docker compose exec -T db psql -U paycycle paycycle
 ```
 
-Automate the dump with cron; the app never needs to stop for a backup.
+Automate the dump with cron; the app never needs to stop for a backup. Copy backups off the machine; a backup beside the stack does not survive the failure that matters most.
 
 ## How the numbers work
 

@@ -33,13 +33,26 @@ Take the dump **immediately before upgrading**. Note `--clean --if-exists` —
 without it the dump can only be restored into a *fresh* database, which is
 useless as a rollback for an in-place upgrade.
 
+If any docker command below reports a permission error, your account is not in
+the docker group. Add `sudo` to that command; for consistency, use it on all
+docker commands or none.
+
 ```bash
 docker compose exec -T db pg_dump -U paycycle -d paycycle --clean --if-exists \
-  | gzip > paycycle-pre-v0.8.0-$(date +%F-%H%M%S).sql.gz
+  | gzip > ~/paycycle-pre-v0.8.0-$(date +%F-%H%M%S).sql.gz
 
-# prove it isn't truncated — must print 1
-gunzip -c paycycle-pre-v0.8.0-*.sql.gz | grep -c "PostgreSQL database dump complete"
+# both checks must print 1
+gunzip -c ~/paycycle-pre-v0.8.0-*.sql.gz | grep -c "PostgreSQL database dump complete"
+gunzip -c ~/paycycle-pre-v0.8.0-*.sql.gz | grep -c "COPY public.transactions"
 ```
+
+The first check proves the dump is not truncated; the second proves it contains your data — a complete-but-empty dump is useless as a rollback.
+
+#### Permission denied?
+
+The `>` redirect runs in your shell before sudo, so `sudo !!` won't help. The command above uses `~` (your home directory, expanded before sudo runs) — the file is created there and you own it.
+
+If the file must go beside the stack, use `sudo sh -c '... | gzip > paycycle-pre-v0.8.0-$(date +%F-%H%M%S).sql.gz'` instead (file is root-owned; later operations need sudo). `docker compose` must run from the stack directory — you cannot simply `cd ~` first.
 
 Record a baseline to reconcile against afterwards:
 
@@ -70,7 +83,7 @@ docker run -d --name pc-dryrun \
   -p 55432:5432 postgres:16-alpine
 sleep 5
 
-gunzip -c paycycle-pre-v0.8.0-*.sql.gz | docker exec -i pc-dryrun psql -U paycycle -d paycycle
+gunzip -c ~/paycycle-pre-v0.8.0-*.sql.gz | docker exec -i pc-dryrun psql -U paycycle -d paycycle
 
 # the new image migrates on boot
 docker run --rm --network host \
@@ -151,7 +164,7 @@ You must restore the database *and* revert the image:
 
 ```bash
 docker compose stop app
-gunzip -c paycycle-pre-v0.8.0-*.sql.gz \
+gunzip -c ~/paycycle-pre-v0.8.0-*.sql.gz \
   | docker compose exec -T db psql -U paycycle -d paycycle
 # revert image: to 0.7.0 in docker-compose.yml
 docker compose up -d
