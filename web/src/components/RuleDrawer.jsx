@@ -82,15 +82,24 @@ export default function RuleDrawer({ txn, categories, currency, onClose, onAppli
     headingRef.current?.focus();
   }, []);
 
-  // Debounced live match preview — don't fire while no condition is filled.
+  // Debounced live match preview — don't fire while no condition is filled,
+  // and don't fire before a category is picked either: the backend scopes
+  // matches to the accounts the chosen category can apply to (see
+  // server/routes/rules.js /preview), so a count taken before that choice is
+  // made would be unscoped (counts every account) and then drop the moment a
+  // category is picked — a confusing jump. Withholding the count until both
+  // are set keeps what's shown always equal to what Save & apply would do.
   useEffect(() => {
-    if (!hasCriteria(state)) {
+    if (!hasCriteria(state) || !state.categoryTemplateId) {
       setPreview(null);
       return undefined;
     }
     const timer = setTimeout(async () => {
       try {
-        const res = await api('/rules/preview', { method: 'POST', body: toApiFields(state) });
+        const res = await api('/rules/preview', {
+          method: 'POST',
+          body: { categoryTemplateId: state.categoryTemplateId, ...toApiFields(state) },
+        });
         setPreview(res);
       } catch {
         setPreview(null);
@@ -157,7 +166,8 @@ export default function RuleDrawer({ txn, categories, currency, onClose, onAppli
   };
 
   let previewText;
-  if (!hasCriteria(state)) previewText = 'No matches yet — add a condition';
+  if (!state.categoryTemplateId) previewText = 'Pick a category to see matches';
+  else if (!hasCriteria(state)) previewText = 'No matches yet — add a condition';
   else if (!preview) previewText = 'Checking…';
   else if (preview.count === 0) previewText = 'No matches yet — add a condition';
   else previewText = `Matches ${preview.count} transaction(s)`;
