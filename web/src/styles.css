@@ -601,6 +601,24 @@ input[type="checkbox"] { accent-color: var(--accent); }
 .period-misc h3 { margin-top: 0; }
 .table .nowrap { white-space: nowrap; }
 
+/* Tag-group disclosure toggle in the misc-transactions table: same dashed
+   in-table-button look as .cell-amount.editable, but left-aligned with room
+   for the chevron + name + count rather than a single right-aligned figure. */
+.group-toggle {
+  font: inherit;
+  background: none;
+  border: none;
+  border-bottom: 1px dashed var(--baseline);
+  color: var(--ink);
+  cursor: pointer;
+  padding: 0.1rem 0.25rem;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+.group-toggle:hover { color: var(--accent-hi); border-bottom-color: var(--accent); }
+.unplanned-txn td:first-child { padding-left: 1.5rem; }
+
 .period-table {
   background: var(--surface);
   border: 1px solid var(--border);
@@ -1030,6 +1048,14 @@ input.category-name:hover, input.category-name:focus { border-color: var(--borde
 }
 .rule-drawer label { margin: 0.4rem 0; }
 .rule-drawer:focus-visible { outline: none; }
+
+/* The add-transaction drawer wraps its fields in a <form> (so Enter submits
+   natively), which becomes the flex child in place of .modal-actions itself
+   — without this, .rule-drawer .modal-actions's margin-top:auto (below)
+   resolves against the form, not the drawer, and the footer stops anchoring
+   to the bottom. Making the form itself a flex column that fills the
+   drawer's height restores that anchoring exactly like RuleDrawer's footer. */
+.txn-drawer-form { display: flex; flex-direction: column; flex: 1; gap: 0.85rem; }
 
 .rule-drawer-head { display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; }
 .rule-drawer-head h2 { margin: 0; }

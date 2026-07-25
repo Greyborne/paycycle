@@ -262,6 +262,93 @@ here, dated. A checker's FAIL is not overridden by a worker's — or the
 boss's — say-so: disputes are resolved by re-reading this file and ruling
 explicitly, in writing, before continuing.
 
+- **2026-07-24 — A design-system token that fails contrast *uniformly*
+  is a design task, not a feature-build blocker.** Ruling made during the
+  unplanned-transactions build. An a11y-checker correctly measured that
+  `.btn-primary`'s white text on the `--btn-grad` orange gradient is
+  ~2.9–3.8:1 — a real AA failure for normal-weight text, in both themes.
+  But the failure is a property of the app-wide accent token, identical
+  on every primary button already in production (Login, onboarding, every
+  form); the task under review merely *reused* `.btn-primary` unchanged,
+  as §4 requires. Fixing it means darkening the flagship orange or
+  switching button text to dark ink — both change every button app-wide
+  and both alter the accent identity §2 and §4 place off-limits *without a
+  dedicated design task*. Making the one new button an exception would be
+  its own §4 consistency violation.
+
+  Boss ruling: **overruled as a blocker for the feature build; escalated
+  as a standalone design task.** The checker was right about the fact and
+  right to surface it — a valid finding is not the same as a valid blocker
+  for *this* task. General rule this sets: when a checker's contrast (or
+  other visual) FAIL lands on an unchanged, correctly-reused design-system
+  token whose defect is uniform across its existing uses, the feature
+  build does not own the fix; the boss logs it and routes it to a scoped
+  design task. This is the deliberate flip side of the 2026-07-14 §2 note
+  — that one caught a token passing in one context but failing in a new
+  one (context-specific, and the new use *did* own it); this one is a
+  token failing everywhere alike (systemic, and no single use owns it).
+  Distinguish the two by asking: does this rendering context fail while
+  other uses of the same token pass? If yes, the build owns it. If it
+  fails everywhere identically, it is a design-task escalation. Escalated
+  via a background task the same day. Boss-approved.
+
+- **2026-07-24 — No agent runs a destructive git command on work it did
+  not create.** Added the same day as the entry below, after an
+  **a11y-checker** needed a temporary named export to mount a component
+  in a test harness, made the edit, and then "cleanly reverted" it with
+  `git checkout web/src/pages/PeriodDetail.jsx`. That command does not
+  revert *your* edit — it reverts *the file*, and the file also held the
+  entire uncommitted task-2 change it had just spent 80 tool calls
+  verifying. The change was destroyed. A second checker independently
+  noticed the diff had vanished mid-run and, correctly, flagged it
+  instead of assuming it had imagined it.
+
+  Binding on every agent:
+  - Never run `git checkout <path>`, `git restore`, `git stash`,
+    `git reset`, or `git clean` against a file you did not create in
+    this task. The working tree is shared and usually holds other
+    agents' uncommitted work.
+  - To undo your OWN temporary edit, reverse it with the same editing
+    tool you used to make it — an Edit that restores the exact prior
+    text. If you cannot state precisely what you changed, you cannot
+    safely undo it, and you must report that instead of guessing.
+  - Checkers: prefer verification that does not require editing source
+    at all. Needing to modify the code under test to test it is a signal
+    to change method, not to edit and revert.
+
+  Note this is *not* a rule against test harnesses — the harness itself
+  was good practice and produced a real, well-evidenced result under an
+  auth constraint. The failure was purely the cleanup command. Boss-approved.
+
+- **2026-07-24 — No agent writes to the shared dev database.** Added
+  during the unplanned-transactions build, after a **worker** (not a
+  checker) verified delete-persistence by deleting a real seeded
+  transaction from the shared dev DB and resetting a seeded user's
+  password hash to get through the login form. It disclosed and restored
+  both, but could not restore one field (`import_hash`), so the restore
+  was *not* actually lossless — which is the whole point.
+
+  The existing isolation rule was written for checkers of destructive
+  features. It binds on **every agent, worker and checker alike, on every
+  task**, and it is now written down as such:
+
+  - No agent may INSERT, UPDATE or DELETE against the shared dev DB
+    (the compose `db` container behind `:8080`), for any reason,
+    including "I'll put it back."
+  - Read-only queries against it are fine.
+  - Verifying behavior that requires mutation — deletes, state after a
+    write, login as a seeded user — is done against an **isolated
+    ephemeral DB** (`npm run test:integration:ephemeral` is the existing
+    path), or with a client-side fixture, or not at all. "Not at all,
+    and I said so" is an acceptable, honest result under §5.
+  - Credentials are never rewritten to obtain access. An agent that
+    cannot log in reports that it could not log in.
+
+  Rationale: a restore is a second chance to corrupt the data, and an
+  agent that has already decided the risk is acceptable is the last
+  party who should be judging whether its own restore was complete.
+  Boss-approved.
+
 - **2026-07-23 — Table actions and horizontal overflow.** Added two §4
   component-pattern rules ahead of the planned-vs-actual build
   (`docs/plans/planned-vs-actual.md`), both from defects that build

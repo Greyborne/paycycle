@@ -1,11 +1,12 @@
-import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { Link, useParams, useSearchParams } from 'react-router-dom';
 import { api } from '../api.js';
 import { useAccount, useAuth } from '../App.jsx';
 import { centsToInput, fmtDate, fmtMoney, fmtRange, parseMoney, todayISO } from '../format.js';
 import HealthBadge from '../components/HealthBadge.jsx';
-import QuickAddTransaction from '../components/QuickAddTransaction.jsx';
+import TransactionDrawer from '../components/TransactionDrawer.jsx';
 import { useAccounts } from '../useAccounts.js';
+import { groupUnplanned } from '../unplanned.js';
 
 // The page shows a window of consecutive periods side by side; the column
 // count adapts to the available width (minimize the sidebar for more).
@@ -335,7 +336,7 @@ function ClosePeriodDialog({ period, currency, accountId, accountName, onCancel,
   );
 }
 
-function PeriodColumn({ data, currency, userEmail, tags, accountName, driftThresholdCents, onChanged }) {
+function PeriodColumn({ data, currency, userEmail, tags, accountName, defaultAccountId, driftThresholdCents, onChanged }) {
   const { period, expenses, income, transactions, summary } = data;
   const accountId = data.accountId;
   const editable = period.editable;
@@ -346,6 +347,38 @@ function PeriodColumn({ data, currency, userEmail, tags, accountName, driftThres
   const clearedRefs = useRef(new Map());
   const planNoticeRef = useRef(null);
   const [planNotice, setPlanNotice] = useState(null);
+  // Group-toggle buttons, keyed by group.key exactly like clearedRefs keys
+  // the Cleared checkboxes by category id — deleteTxn below needs to land
+  // focus back on the toggle for whichever group the deleted row belonged to.
+  const groupToggleRefs = useRef(new Map());
+  const miscHeadingRef = useRef(null);
+  const [adding, setAdding] = useState(false);
+  const addBtnRef = useRef(null);
+  // Standard dialog behavior: return focus to the button that opened the
+  // drawer when it closes. If the button is gone (e.g. the period stopped
+  // being editable), no-op safely.
+  const closeAdding = () => {
+    setAdding(false);
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      if (addBtnRef.current?.isConnected) addBtnRef.current.focus();
+    }));
+  };
+
+  // Which tag groups are expanded, keyed on group.key (never array index) so
+  // the open/closed state survives the reload that follows adding/deleting a
+  // transaction.
+  const [openGroups, setOpenGroups] = useState(() => new Set());
+  const toggleGroup = (key) => {
+    setOpenGroups((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key); else next.add(key);
+      return next;
+    });
+  };
+  const { groups, totalCents } = useMemo(
+    () => groupUnplanned({ transactions, categories: tags, accountId, defaultAccountId }),
+    [transactions, tags, accountId, defaultAccountId]
+  );
 
   // Restore focus to whatever triggered the dialog's opening. On a plain
   // cancel/escape/backdrop close nothing about the period changes, so the
@@ -380,9 +413,24 @@ function PeriodColumn({ data, currency, userEmail, tags, accountName, driftThres
     }
     onChanged();
   };
-  const deleteTxn = async (id) => {
+  // Same problem as planForward below: deleting a transaction removes its
+  // own row, and the reload can also remove the whole group's disclosure
+  // button (a group with one transaction collapses to a plain-text, buttonless
+  // row once it hits count 0) — either way, focus would otherwise fall
+  // through to <body>. Land back on the group's own toggle, since that's the
+  // control the user just used to reveal this row and the most likely place
+  // they want to keep working from; if the group emptied out and the toggle
+  // is gone, fall back to the section heading (stable, always present, and
+  // announces "Misc transactions" again for context) rather than guessing at
+  // some other row's delete button.
+  const deleteTxn = async (id, groupKey) => {
     await api(`/transactions/${id}`, { method: 'DELETE' });
-    onChanged();
+    await onChanged();
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      const toggle = groupToggleRefs.current.get(groupKey);
+      if (toggle?.isConnected) toggle.focus();
+      else miscHeadingRef.current?.focus();
+    }));
   };
   // Reuses the same mechanism as DriftNotices.jsx's "Plan {amount} going
   // forward" — rolls the recurring plan forward to what actually cleared.
@@ -508,7 +556,7 @@ function PeriodColumn({ data, currency, userEmail, tags, accountName, driftThres
         title="Planned Income" items={income} currency={currency} editable={editable} onPatch={patchItem}
         plannedTotal={summary?.plannedIncome ?? 0}
         clearedTotal={summary?.clearedIncome ?? 0}
-        clearedNote="(cleared items + misc income)"
+        clearedNote="(cleared items + unplanned income)"
         driftThresholdCents={driftThresholdCents}
         onPlanForward={planForward}
         registerClearedRef={(key, el) => clearedRefs.current.set(key, el)}
@@ -517,75 +565,149 @@ function PeriodColumn({ data, currency, userEmail, tags, accountName, driftThres
         title="Planned Expenses" items={expenses} currency={currency} editable={editable} onPatch={patchItem}
         plannedTotal={summary?.plannedExpenses ?? 0}
         clearedTotal={summary?.clearedExpenses ?? 0}
-        clearedNote="(cleared items + misc transactions)"
+        clearedNote="(cleared items + unplanned transactions)"
         driftThresholdCents={driftThresholdCents}
         onPlanForward={planForward}
         registerClearedRef={(key, el) => clearedRefs.current.set(key, el)}
       />
 
       <section className="card period-misc">
-        <h3>Misc transactions</h3>
-        {summary && (
-          <div className="totals-grid">
-            <div className="stat">
-              <div className="stat-label">Misc income</div>
-              <div className="stat-value">{fmtMoney(summary.miscIncome, currency)}</div>
-            </div>
-            <div className="stat">
-              <div className="stat-label">Misc expenses</div>
-              <div className="stat-value">{fmtMoney(summary.miscExpenses, currency)}</div>
-            </div>
-          </div>
-        )}
-        {editable ? (
-          <QuickAddTransaction
+        <div className="card-head">
+          <h3 ref={miscHeadingRef} tabIndex={-1}>Unplanned transactions</h3>
+          {editable && (
+            <button
+              type="button" ref={addBtnRef} className="btn btn-primary"
+              onClick={() => setAdding(true)}
+            >
+              Add transaction
+            </button>
+          )}
+        </div>
+        {adding && (
+          <TransactionDrawer
             onAdded={onChanged}
+            onClose={closeAdding}
             defaultDate={summary?.isCurrent ? todayISO() : period.start}
             fixedAccountId={data.accountId}
             tags={tags}
           />
-        ) : (
+        )}
+        {summary && (
+          <div className="totals-grid">
+            <div className="stat">
+              <div className="stat-label">Unplanned income</div>
+              <div className="stat-value">{fmtMoney(summary.miscIncome, currency)}</div>
+            </div>
+            <div className="stat">
+              <div className="stat-label">Unplanned expenses</div>
+              <div className="stat-value">{fmtMoney(summary.miscExpenses, currency)}</div>
+            </div>
+          </div>
+        )}
+        {!editable && (
           <p className="muted small">
             {period.status === 'closed'
               ? 'This period is closed — reopen it to make changes.'
               : 'Transactions can be added once this period is reached.'}
           </p>
         )}
-        {transactions.length > 0 && (
+        {groups.length > 0 && (
+          <div className="table-scroll">
           <table className="table">
             <thead>
-              <tr><th>Date</th><th>Description</th><th>Tag</th><th className="num">Amount</th><th /></tr>
+              <tr>
+                <th scope="col">Tag</th>
+                <th scope="col" className="num">Actual</th>
+                <th scope="col"><span className="sr-only">Actions</span></th>
+              </tr>
             </thead>
-            <tbody>
-              {transactions.map((t) => (
-                <tr key={t.id}>
-                  <td className="nowrap">{fmtDate(t.date, { month: 'short', day: 'numeric' })}</td>
-                  <td>
-                    {t.description || <span className="muted">—</span>}
-                    {t.entered_by && t.entered_by !== userEmail && (
-                      <span className="muted small"> · {t.entered_by}</span>
-                    )}
-                    {t.account_currency && (
-                      <span className="muted small" title="On a foreign-currency tracked account — not counted in period totals">
-                        {' '}· {t.account_name} ({t.account_currency})
-                      </span>
-                    )}
-                  </td>
-                  <td>
-                    {t.category_name
-                      ? <span className="badge badge-tag">{t.category_name}</span>
-                      : <span className="muted">—</span>}
-                  </td>
-                  <td className={`num ${t.type === 'expense' ? 'amount-neg' : ''}`}>
-                    {t.type === 'expense' ? '−' : ''}{fmtMoney(t.amount_cents, t.account_currency || currency)}
-                  </td>
-                  <td className="center">
-                    <button className="btn btn-ghost btn-small" onClick={() => deleteTxn(t.id)} aria-label="Delete transaction">✕</button>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
+            {groups.map((group) => {
+              const open = openGroups.has(group.key);
+              const firstRowId = `unplanned-${group.key}-rows`;
+              return (
+                <tbody key={group.key}>
+                  <tr>
+                    <td>
+                      {group.count > 0 ? (
+                        <button
+                          type="button"
+                          ref={(el) => groupToggleRefs.current.set(group.key, el)}
+                          className="group-toggle"
+                          aria-expanded={open}
+                          aria-controls={firstRowId}
+                          onClick={() => toggleGroup(group.key)}
+                        >
+                          <span aria-hidden="true">{open ? '▾' : '▸'}</span>
+                          {group.name}
+                          {group.hasUncounted && (
+                            <span
+                              className="muted small"
+                              title="Includes transactions on a foreign-currency account, which don't count toward period totals"
+                            > · not counted</span>
+                          )}
+                          <span className="muted small"> ({group.count})</span>
+                        </button>
+                      ) : (
+                        <>
+                          {group.name}
+                          {group.hasUncounted && (
+                            <span
+                              className="muted small"
+                              title="Includes transactions on a foreign-currency account, which don't count toward period totals"
+                            > · not counted</span>
+                          )}
+                        </>
+                      )}
+                    </td>
+                    <td className={`num nowrap ${group.count > 0 && group.totalCents < 0 ? 'amount-neg' : ''}`}>
+                      {group.count === 0 ? (
+                        <span className="muted">—</span>
+                      ) : (
+                        <>{group.totalCents < 0 ? '−' : ''}{fmtMoney(Math.abs(group.totalCents), currency)}</>
+                      )}
+                    </td>
+                    <td />
+                  </tr>
+                  {open && group.transactions.map((t, i) => (
+                    <tr key={t.id} id={i === 0 ? firstRowId : undefined} className="unplanned-txn">
+                      <td>
+                        <span className="nowrap">{fmtDate(t.date, { month: 'short', day: 'numeric' })}</span>{' '}
+                        {t.description || <span className="muted">—</span>}
+                        {t.entered_by && t.entered_by !== userEmail && (
+                          <span className="muted small"> · {t.entered_by}</span>
+                        )}
+                        {t.account_currency && (
+                          <span className="muted small" title="On a foreign-currency tracked account — not counted in period totals">
+                            {' '}· {t.account_name} ({t.account_currency})
+                          </span>
+                        )}
+                      </td>
+                      <td className={`num nowrap ${t.type === 'expense' ? 'amount-neg' : ''}`}>
+                        {t.type === 'expense' ? '−' : ''}{fmtMoney(t.amount_cents, t.account_currency || currency)}
+                      </td>
+                      <td className="center">
+                        <button
+                          className="btn btn-ghost btn-small"
+                          onClick={() => deleteTxn(t.id, group.key)}
+                          aria-label="Delete transaction"
+                        >✕</button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              );
+            })}
+            <tfoot>
+              <tr>
+                <td>Total unplanned</td>
+                <td className={`num nowrap ${totalCents < 0 ? 'amount-neg' : ''}`}>
+                  {totalCents < 0 ? '−' : ''}{fmtMoney(Math.abs(totalCents), currency)}
+                </td>
+                <td />
+              </tr>
+            </tfoot>
           </table>
+          </div>
         )}
       </section>
     </div>
@@ -693,6 +815,7 @@ export default function PeriodDetail() {
   const nav = periods[0]?.nav;
   const pageVars = { '--sticky-top': `${stickyTop}px` };
   if (headH) pageVars['--head-h'] = `${headH}px`;
+  const defaultAccountId = (base.find((a) => a.isDefault) ?? base[0])?.id ?? null;
 
   return (
     <div className="periods-page" ref={wrapRef} style={pageVars}>
@@ -712,6 +835,7 @@ export default function PeriodDetail() {
                 userEmail={user.email}
                 tags={tags}
                 accountName={base.find((a) => a.id === data.accountId)?.name}
+                defaultAccountId={defaultAccountId}
                 driftThresholdCents={user.driftThresholdCents}
                 onChanged={load}
               />
