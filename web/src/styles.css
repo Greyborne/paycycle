@@ -809,7 +809,15 @@ input.category-name:hover, input.category-name:focus { border-color: var(--borde
 
 /* ---------- transactions & rules ---------- */
 
-.content:has(.transactions-page), .content:has(.rules-page) { max-width: none; }
+.content:has(.transactions-page) { max-width: none; }
+
+/* Categories and Rules are both single-column, order-significant editor
+   tables (reorder arrows). They share one bounded, generous max-width —
+   wider than the default .content cap so their flexible columns (category
+   name; rule Description/Notes) get real room on wide screens, but capped
+   so those columns don't sprawl on ultrawide. Reuses the 1600px value
+   already established as the dashboard's wide-screen cap (below). */
+.content:has(.categories-page), .content:has(.rules-page) { max-width: 1600px; }
 
 .table .sortable { cursor: pointer; user-select: none; white-space: nowrap; }
 .table .sortable:hover { color: var(--ink); }
