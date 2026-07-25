@@ -34,6 +34,35 @@ function CategorySelect({ value, categories, onChange, disabled, ariaLabel }) {
   );
 }
 
+const EMPTY_FILTERS = { from: '', to: '', category: '', search: '' };
+
+const filtersKey = (id) => `paycycle:txn-filters:${id ?? 'none'}`;
+
+function loadStoredFilters(accountId) {
+  try {
+    const raw = sessionStorage.getItem(filtersKey(accountId));
+    if (!raw) return { ...EMPTY_FILTERS };
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== 'object') return { ...EMPTY_FILTERS };
+    return {
+      from: typeof parsed.from === 'string' ? parsed.from : '',
+      to: typeof parsed.to === 'string' ? parsed.to : '',
+      category: typeof parsed.category === 'string' ? parsed.category : '',
+      search: typeof parsed.search === 'string' ? parsed.search : '',
+    };
+  } catch {
+    return { ...EMPTY_FILTERS };
+  }
+}
+
+function saveStoredFilters(accountId, filters) {
+  try {
+    sessionStorage.setItem(filtersKey(accountId), JSON.stringify(filters));
+  } catch {
+    // Private mode / disabled storage: silently skip persistence.
+  }
+}
+
 const SORTS = {
   date: (t) => t.date,
   description: (t) => (t.description || '').toLowerCase(),
@@ -93,6 +122,16 @@ export default function Transactions() {
   }, [filters, filterAccountId]);
 
   useEffect(() => { load(); }, [load]);
+
+  // Restore this account's remembered filters (for the browser session) on
+  // mount and whenever the focused account changes. Deliberately depends
+  // only on filterAccountId, not on filters, to avoid an update loop.
+  // Guarded on a real, resolved account id so an early-firing effect (before
+  // accounts load) never clobbers state with the empty default.
+  useEffect(() => {
+    if (filterAccountId == null) return;
+    setFilters(loadStoredFilters(filterAccountId));
+  }, [filterAccountId]);
 
   const sorted = useMemo(() => {
     if (!txns) return null;
@@ -179,7 +218,11 @@ export default function Transactions() {
   const selectedAccountIds = sorted.filter((t) => selected.has(t.id)).map((t) => t.account_id);
   const bulkCategories = categoriesForAccounts(categories, selectedAccountIds, defaultAccountId);
 
-  const setFilter = (k, v) => setFilters((f) => ({ ...f, [k]: v }));
+  const setFilter = (k, v) => setFilters((f) => {
+    const next = { ...f, [k]: v };
+    if (filterAccountId != null) saveStoredFilters(filterAccountId, next);
+    return next;
+  });
   const provenance = (t) => {
     if (!t.category_template_id) return ['uncat', 'needs review'];
     if (t.categorized_by === 'rule') return ['auto', 'auto-matched'];
