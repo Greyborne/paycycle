@@ -210,7 +210,7 @@ export default function Transactions() {
             <select value={filters.category} onChange={(e) => setFilter('category', e.target.value)}>
               <option value="">All</option>
               <option value="none">Uncategorized</option>
-              {categories.filter((c) => !c.archived).map((c) => (
+              {categoriesForAccount(categories, filterAccountId, defaultAccountId).map((c) => (
                 <option key={c.id} value={c.id}>{c.name}{c.categoryType === 'tag' ? ' (tag)' : ''}</option>
               ))}
             </select>
