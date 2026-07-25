@@ -235,6 +235,16 @@ async function seedSyncBudget() {
   );
   assert.ok(periods.length >= 2, 'seedSyncBudget needs at least two materialized periods for the period-move case');
 
+  // periodContaining(anchor=today, startedOn) can (and here, does) start
+  // BEFORE startedOn itself - that's the exact bug the tracking-floor fix
+  // (docs/plans/simplefin-tracking-floor.md) targets. This suite's
+  // restatement/closed-period scenarios are unrelated to that floor and
+  // deliberately use dates at each period's own start, so back-date
+  // started_on to the earliest materialized period's start here - the
+  // dedicated floor tests below seed their own account with the exact
+  // started_on/period misalignment instead.
+  await q('UPDATE accounts SET started_on = $1 WHERE id = $2', [periods[0].start_date, accountId]);
+
   const { rows: tRows } = await q('SELECT * FROM category_templates WHERE id = $1', [categoryId]);
   const template = tRows[0];
 
@@ -250,9 +260,11 @@ async function seedSyncBudget() {
     [conn[0].id, accountId]
   );
 
+  const { rows: accountRows } = await q('SELECT * FROM accounts WHERE id = $1', [accountId]);
   const ctx = {
     budget: { id: budgetId },
     templatesById: new Map([[categoryId, template]]),
+    accountsById: new Map([[accountId, accountRows[0]]]),
   };
 
   return { userId, budgetId, accountId, categoryId, template, periods, ctx, link: link[0] };
@@ -540,6 +552,155 @@ test('processTxn restatement: an OPEN-period restatement is not blocked by the c
     [period.id, ctx.categoryId]
   );
   assert.equal(li.rows[0].cleared_amount_cents, 11407);
+});
+
+// ---------------------------------------------------------------------
+// Tracking-from floor (docs/plans/simplefin-tracking-floor.md): processTxn
+// must drop any synced transaction dated strictly before the mapped
+// account's started_on, even though it falls inside the first pay period's
+// window (that window is anchored on periodContaining(started_on) and can
+// start earlier than started_on itself - see budget.js). Uses a real
+// `SELECT * FROM accounts` row for ctx.accountsById so the comparison is
+// exercised against started_on in whatever form Postgres actually returns
+// it as, not an assumed shape.
+// ---------------------------------------------------------------------
+
+async function seedFloorBudget(startedOn) {
+  const email = `floor-test-${Date.now()}-${Math.random().toString(36).slice(2, 8)}@example.test`;
+  const { rows: user } = await q(
+    "INSERT INTO users (email, password_hash) VALUES ($1, 'x') RETURNING id",
+    [email]
+  );
+  const userId = user[0].id;
+  const budget = await createSoloBudget(userId);
+  const budgetId = budget.id;
+
+  const accountId = await getDefaultAccountId(budgetId);
+  await q('UPDATE accounts SET started_on = $1 WHERE id = $2', [startedOn, accountId]);
+  // Anchor the cadence well before started_on. ensureMaterialized's
+  // first-period logic (budget.js) is `periodContaining(cfg,
+  // started_on)` - the period CONTAINING started_on, aligned to the
+  // cadence's own anchor_date - so with a 100-day-earlier anchor this
+  // first materialized period starts a couple of days BEFORE started_on
+  // itself. That gap (here, 2026-06-01/-02 for started_on=2026-06-03) is
+  // exactly the leaky window this floor exists to close.
+  await q(
+    "INSERT INTO pay_period_configs (budget_id, account_id, cadence, anchor_date) VALUES ($1, $2, 'biweekly', $3)",
+    [budgetId, accountId, addDays(startedOn, -100)]
+  );
+  await ensureMaterialized(budgetId);
+
+  const { rows: conn } = await q(
+    "INSERT INTO simplefin_connections (budget_id, access_url, label) VALUES ($1, 'enc:test', 'Test Bank') RETURNING id",
+    [budgetId]
+  );
+  const { rows: link } = await q(
+    `INSERT INTO simplefin_account_links (connection_id, sf_account_id, sf_name, account_id)
+     VALUES ($1, 'sf-acct-floor', 'Checking', $2) RETURNING *`,
+    [conn[0].id, accountId]
+  );
+
+  // Real `SELECT *` row, exactly as syncBudget builds ctx.accountsById -
+  // proves the comparison against whatever form Postgres actually returns
+  // started_on as (see the assertion below).
+  const { rows: accountRows } = await q('SELECT * FROM accounts WHERE id = $1', [accountId]);
+  const accountRow = accountRows[0];
+
+  const ctx = {
+    budget: { id: budgetId },
+    templatesById: new Map(),
+    accountsById: new Map([[accountId, accountRow]]),
+    rules: [],
+  };
+
+  return { userId, budgetId, accountId, ctx, link: link[0], accountRow };
+}
+
+test('processTxn: started_on comes back from a real SELECT * as a plain YYYY-MM-DD string', async (t) => {
+  const ctx = await seedFloorBudget('2026-06-03');
+  t.after(() => cleanup(ctx));
+
+  // This is the whole subtlety the fix depends on: this project sets a
+  // global DATE type-parser override (server/db.js, OID 1082 -> identity),
+  // so DATE columns come back as plain strings everywhere, including
+  // `SELECT *` here - NOT as JS Date objects. If this ever regresses (the
+  // override is removed, or a differently-configured pool is used), the
+  // string comparison in processTxn would silently misbehave.
+  assert.equal(typeof ctx.accountRow.started_on, 'string');
+  assert.equal(ctx.accountRow.started_on, '2026-06-03');
+});
+
+test('processTxn: a transaction dated before started_on is dropped and counted skipped', async (t) => {
+  const ctx = await seedFloorBudget('2026-06-03');
+  t.after(() => cleanup(ctx));
+
+  // '2026-06-02' is the actual leaky window this fix targets: with
+  // started_on='2026-06-03' and the cadence anchored 100 days earlier, the
+  // first MATERIALIZED pay period is periodContaining(started_on), which
+  // here runs 2026-06-01 -> 2026-06-14 - i.e. it starts two days before
+  // started_on. Pre-fix, a transaction dated 2026-06-01 or -02 would have
+  // been inserted anyway because it falls inside that period's window.
+  const results = { skipped: 0, added: 0 };
+  await processTxn(
+    { query: q }, ctx.ctx, ctx.link, sfTxn('txn-before-floor', '-42.00', '2026-06-02'), ctx.userId, results
+  );
+
+  assert.equal(results.skipped, 1, 'must be counted as skipped');
+  assert.equal(results.added, 0, 'must not be inserted');
+  const rows = await q('SELECT id FROM transactions WHERE budget_id = $1', [ctx.budgetId]);
+  assert.equal(rows.rows.length, 0, 'no transaction row must land');
+});
+
+test('processTxn: a transaction dated exactly on started_on IS inserted (floor is strictly-before)', async (t) => {
+  const ctx = await seedFloorBudget('2026-06-03');
+  t.after(() => cleanup(ctx));
+
+  const results = { skipped: 0, added: 0 };
+  await processTxn(
+    { query: q }, ctx.ctx, ctx.link, sfTxn('txn-on-floor', '-42.00', '2026-06-03'), ctx.userId, results
+  );
+
+  assert.equal(results.skipped, 0);
+  assert.equal(results.added, 1);
+  const rows = await q('SELECT date FROM transactions WHERE budget_id = $1', [ctx.budgetId]);
+  assert.equal(rows.rows[0].date, '2026-06-03');
+});
+
+test('processTxn: a transaction dated after started_on IS inserted', async (t) => {
+  const ctx = await seedFloorBudget('2026-06-03');
+  t.after(() => cleanup(ctx));
+
+  const results = { skipped: 0, added: 0 };
+  await processTxn(
+    { query: q }, ctx.ctx, ctx.link, sfTxn('txn-after-floor', '-42.00', '2026-06-05'), ctx.userId, results
+  );
+
+  assert.equal(results.skipped, 0);
+  assert.equal(results.added, 1);
+});
+
+test('processTxn: a null started_on applies no floor - a pre-tracking-date within the first period still imports', async (t) => {
+  const ctx = await seedFloorBudget('2026-06-03');
+  t.after(() => cleanup(ctx));
+
+  await q('UPDATE accounts SET started_on = NULL WHERE id = $1', [ctx.accountId]);
+  // Refresh ctx.accountsById with the now-null row, exactly as syncBudget
+  // would re-read it on its next sync. The pay period materialized above
+  // (2026-06-01 -> 2026-06-14, back-dated to started_on before it was
+  // nulled out) still exists - nulling started_on afterward does not
+  // retroactively remove it, so the same 2026-06-02 date used in the
+  // "before started_on" test above still has a period to land in here.
+  const { rows: accountRows } = await q('SELECT * FROM accounts WHERE id = $1', [ctx.accountId]);
+  ctx.ctx.accountsById.set(ctx.accountId, accountRows[0]);
+  assert.equal(accountRows[0].started_on, null);
+
+  const results = { skipped: 0, added: 0 };
+  await processTxn(
+    { query: q }, ctx.ctx, ctx.link, sfTxn('txn-no-floor', '-42.00', '2026-06-02'), ctx.userId, results
+  );
+
+  assert.equal(results.skipped, 0, 'no floor means this must not be skipped by the floor guard');
+  assert.equal(results.added, 1);
 });
 
 test.after(() => pool.end());

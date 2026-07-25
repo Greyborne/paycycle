@@ -508,6 +508,27 @@ export async function processTxn(clientDb, ctx, link, sfTxn, userId, results) {
   const t = toTxn(link.sf_account_id, sfTxn);
   if (t.amountCents === 0) return;
 
+  // Hard floor on the mapped account's tracking-from date: the first pay
+  // period's window can start before started_on (it's anchored on
+  // periodContaining(started_on), see budget.js), so a transaction dated
+  // before started_on but still inside that first period's window would
+  // otherwise be inserted, inflating the first period. Per-account, not
+  // per-connection, since one connection can map accounts with different
+  // started_on values. `SELECT *` on accounts (see syncBudget) returns
+  // started_on as a plain 'YYYY-MM-DD' string, the same shape as t.date, so
+  // a direct lexical `<` comparison is chronologically correct - this
+  // project's server/db.js installs a process-wide
+  // `pg.types.setTypeParser(1082, v => v)` that disables pg's default
+  // DATE->Date coercion, so DATE columns never come back as JS Date objects
+  // here, `SELECT *` included, regardless of the ::text casts used
+  // elsewhere in this codebase (budget.js, categories.js) for other reasons.
+  const account = ctx.accountsById.get(link.account_id);
+  const startedOn = account?.started_on;
+  if (startedOn && t.date < startedOn) {
+    results.skipped += 1;
+    return;
+  }
+
   const { rows: existing } = await clientDb.query(
     'SELECT amount_cents, description, date, pay_period_id, category_template_id FROM transactions WHERE budget_id = $1 AND import_hash = $2',
     [budget.id, t.hash]
