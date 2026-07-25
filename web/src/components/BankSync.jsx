@@ -16,6 +16,7 @@ export default function BankSync() {
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState(null);
   const [error, setError] = useState(null);
+  const [warnings, setWarnings] = useState([]);
 
   const load = useCallback(async () => {
     setStatus(await api('/simplefin/status'));
@@ -32,6 +33,7 @@ export default function BankSync() {
     setBusy(true);
     setError(null);
     setMessage(null);
+    setWarnings([]);
     try {
       await api('/simplefin/claim', { method: 'POST', body: { setupToken: trimmed } });
       setSetupToken('');
@@ -61,6 +63,7 @@ export default function BankSync() {
     setBusy(true);
     setError(null);
     setMessage(null);
+    setWarnings([]);
     try {
       const r = await api('/simplefin/sync', { method: 'POST' });
       setMessage(
@@ -69,6 +72,7 @@ export default function BankSync() {
         `${r.replanned ? `, ${r.replanned} recurring plan(s) updated going forward` : ''}` +
         `${r.skipped ? `, ${r.skipped} outside your recorded periods` : ''}.`
       );
+      if (r.warnings?.length) setWarnings(r.warnings);
       await load();
     } catch (err) {
       setError(err.message);
@@ -158,6 +162,15 @@ export default function BankSync() {
         </div>
       )}
       {message && <p className="form-ok" role="status">{message}</p>}
+      {warnings.length > 0 && (
+        <div className="warning-banner" role="status">
+          {warnings.map((w) => (
+            <p key={w.connectionId} className="small">
+              <strong>{w.org}:</strong> {w.messages.join(' ')}
+            </p>
+          ))}
+        </div>
+      )}
       {error && <p className="form-error" role="alert">{error}</p>}
     </section>
   );

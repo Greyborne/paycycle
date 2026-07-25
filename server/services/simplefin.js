@@ -333,6 +333,10 @@ export async function claimSetupToken(setupToken) {
 
 // GET {accessUrl}/accounts. Both `errors` and `errlist` are treated as the
 // error array (the protocol uses either); `org` is optional per account.
+// Returns { accounts, errors } - a non-empty `errors` alongside `accounts`
+// is a soft per-account/per-connection notice, not fatal here; only a
+// non-2xx HTTP status or an unparseable body throws. Callers decide what a
+// populated `errors` array means for them (see /claim vs syncBudget).
 export async function fetchAccounts(accessUrl, startDateUnix, { balancesOnly = false } = {}) {
   let url;
   try {
@@ -353,11 +357,7 @@ export async function fetchAccounts(accessUrl, startDateUnix, { balancesOnly = f
   } catch {
     throw new HttpError(502, 'Bank sync provider returned an unexpected response.');
   }
-  const errors = data.errors || data.errlist;
-  if (errors && errors.length) {
-    throw new HttpError(502, 'The bank sync provider reported an error for this connection.');
-  }
-  return data.accounts || [];
+  return { accounts: data.accounts || [], errors: data.errors || data.errlist || [] };
 }
 
 // Parses a SimpleFIN decimal-string amount into a *signed* integer number
@@ -617,7 +617,7 @@ export async function syncBudget(budget, userId) {
   const { rows: connections } = await q('SELECT * FROM simplefin_connections WHERE budget_id = $1', [budget.id]);
   const results = {
     added: 0, duplicates: 0, updated: 0, skipped: 0, cleared: 0, moved: 0, inClosed: 0, declinedClosed: 0,
-    replanned: 0, otherAccount: 0, drift: [],
+    replanned: 0, otherAccount: 0, drift: [], warnings: [],
   };
   const { rows: accountRows } = await q('SELECT * FROM accounts WHERE budget_id = $1', [budget.id]);
   const defaultAccountId = await getDefaultAccountId(budget.id);
@@ -639,7 +639,12 @@ export async function syncBudget(budget, userId) {
     const linkBySfAccount = new Map(links.map((l) => [l.sf_account_id, l]));
 
     const startDate = await startDateFor(budget.id, connection, links.map((l) => l.account_id));
-    const accounts = await fetchAccounts(decryptSecret(connection.access_url), startDate);
+    const { accounts, errors } = await fetchAccounts(decryptSecret(connection.access_url), startDate);
+
+    if (errors.length) {
+      const org = links.find((l) => l.sf_org_name)?.sf_org_name || connection.label;
+      results.warnings.push({ connectionId: connection.id, org, messages: errors });
+    }
 
     const clientDb = await pool.connect();
     try {
@@ -652,8 +657,10 @@ export async function syncBudget(budget, userId) {
           await processTxn(clientDb, ctx, link, txn, userId, results);
         }
       }
-      // fetchAccounts already threw on a connection-level error, so reaching
-      // here means a clean fetch - safe to advance the sync window.
+      // fetchAccounts already threw on a hard connection-level failure (bad
+      // HTTP status / unparseable body), so reaching here means a clean
+      // fetch - safe to advance the sync window even if it carried soft
+      // per-account `errors` above.
       await clientDb.query('UPDATE simplefin_connections SET last_synced_at = now() WHERE id = $1', [connection.id]);
       await clientDb.query('COMMIT');
     } catch (err) {

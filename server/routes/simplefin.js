@@ -2,7 +2,7 @@ import { Router } from 'express';
 import { pool, q } from '../db.js';
 import { config } from '../config.js';
 import { encryptSecret } from '../services/secrets.js';
-import { bad, requireId } from '../validation.js';
+import { bad, requireId, HttpError } from '../validation.js';
 import { claimSetupToken, fetchAccounts, syncBudget } from '../services/simplefin.js';
 
 const router = Router();
@@ -63,7 +63,11 @@ router.post('/claim', async (req, res, next) => {
       bad('setupToken is required');
     }
     const accessUrl = await claimSetupToken(setupToken.trim());
-    const accounts = await fetchAccounts(accessUrl, null, { balancesOnly: true });
+    const { accounts, errors } = await fetchAccounts(accessUrl, null, { balancesOnly: true });
+
+    if (!accounts.length && errors.length) {
+      throw new HttpError(502, `The bank sync provider reported an error and no accounts were found: ${errors.join(' ')}`);
+    }
 
     const clientDb = await pool.connect();
     try {
@@ -81,7 +85,9 @@ router.post('/claim', async (req, res, next) => {
         );
       }
       await clientDb.query('COMMIT');
-      res.status(201).json({ connectionId: conn[0].id });
+      const response = { connectionId: conn[0].id };
+      if (errors.length) response.warnings = errors;
+      res.status(201).json(response);
     } catch (err) {
       await clientDb.query('ROLLBACK');
       throw err;
