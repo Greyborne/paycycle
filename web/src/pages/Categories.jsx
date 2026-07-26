@@ -1,6 +1,7 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { api } from '../api.js';
 import { useAccount, useAuth } from '../App.jsx';
+import CategoryCreateDrawer from '../components/CategoryCreateDrawer.jsx';
 import { centsToInput, fmtDate, fmtMoney, parseMoney, todayISO } from '../format.js';
 import { useAccounts } from '../useAccounts.js';
 
@@ -149,63 +150,17 @@ function CategoryRow({ cat, currency, onChanged, onMove, isFirst, isLast }) {
   );
 }
 
-function AddForm({ type, onAdded, accountId }) {
-  const [name, setName] = useState('');
-  const [amount, setAmount] = useState('');
-  const [recurrence, setRecurrence] = useState('every_period');
-  const [dueDay, setDueDay] = useState(1);
-  const [error, setError] = useState(null);
-
-  const submit = async (e) => {
-    e.preventDefault();
-    try {
-      await api('/categories', {
-        method: 'POST',
-        body: {
-          name,
-          type,
-          categoryType: recurrence === 'tag' ? 'tag' : 'recurring',
-          recurrence: recurrence === 'tag' ? undefined : recurrence,
-          dueDay: recurrence === 'monthly' ? Number(dueDay) : undefined,
-          amountCents: recurrence === 'tag' ? 0 : (parseMoney(amount) ?? 0),
-          // New categories belong to the account being viewed.
-          accountId: accountId ?? undefined,
-        },
-      });
-      setName(''); setAmount('');
-      setError(null);
-      onAdded();
-    } catch (err) {
-      setError(err.message);
-    }
-  };
-
-  return (
-    <form className="quick-add" onSubmit={submit}>
-      <input value={name} onChange={(e) => setName(e.target.value)} placeholder={`New ${type} category`} required />
-      <select value={recurrence} onChange={(e) => setRecurrence(e.target.value)} title="Recurring categories plan an amount every period; tags just label one-off spending">
-        <option value="every_period">Every period</option>
-        <option value="monthly">Monthly</option>
-        <option value="tag">Tag (one-off)</option>
-      </select>
-      {recurrence === 'monthly' && (
-        <input type="number" min="1" max="31" value={dueDay} onChange={(e) => setDueDay(e.target.value)} title="Due day" />
-      )}
-      {recurrence !== 'tag' && (
-        <input value={amount} onChange={(e) => setAmount(e.target.value)} inputMode="decimal" placeholder="Amount" />
-      )}
-      <button className="btn btn-primary">Add</button>
-      {error && <span className="form-error">{error}</span>}
-    </form>
-  );
-}
-
 export default function Categories() {
   const { user } = useAuth();
   const { accountId } = useAccount();
   const { accounts, base: baseAccounts } = useAccounts();
   const [categories, setCategories] = useState(null);
   const [showArchived, setShowArchived] = useState(false);
+  const [createDrawer, setCreateDrawer] = useState(null); // { seedType } | null
+  const addExpenseBtnRef = useRef(null);
+  const addIncomeBtnRef = useRef(null);
+
+  const [periodStart, setPeriodStart] = useState(null);
 
   const load = useCallback(async () => {
     const data = await api('/categories');
@@ -214,12 +169,25 @@ export default function Categories() {
 
   useEffect(() => { load(); }, [load]);
 
-  if (!categories || accounts === null) return <div className="page-loading">Loading…</div>;
-
   // The page is scoped to the account selected in the top bar, like the
   // dashboard and pay-period views (a NULL category account = the default).
   const defaultId = baseAccounts.find((a) => a.isDefault)?.id ?? baseAccounts[0]?.id ?? null;
   const selectedId = baseAccounts.some((a) => a.id === accountId) ? accountId : defaultId;
+
+  // Default "Valid from" for the create drawer is the first day of the
+  // selected account's current pay period. Refetched whenever the selected
+  // account changes; a fetch failure just leaves the default null (drawer
+  // falls back to today).
+  useEffect(() => {
+    let cancelled = false;
+    api(`/periods/current?account=${selectedId ?? ''}`)
+      .then((d) => { if (!cancelled) setPeriodStart(d?.period?.start ?? null); })
+      .catch(() => { if (!cancelled) setPeriodStart(null); });
+    return () => { cancelled = true; };
+  }, [selectedId]);
+
+  if (!categories || accounts === null) return <div className="page-loading">Loading…</div>;
+
   const inAccount = (c) => (c.accountId ?? defaultId) === selectedId;
 
   const move = async (cat, dir) => {
@@ -231,6 +199,26 @@ export default function Categories() {
     [ids[i], ids[j]] = [ids[j], ids[i]];
     await api('/categories/reorder', { method: 'POST', body: { type: cat.type, ids } });
     load();
+  };
+
+  const openCreateDrawer = (seedType, triggerRef) => setCreateDrawer({ seedType, triggerRef });
+
+  // Return focus to whichever "+ Add category" button opened the drawer —
+  // mirrors Rules.jsx's closeCreateDrawer/onRuleCreated idiom for
+  // RuleCreateDrawer. The toggle inside the drawer may have switched away
+  // from the seed type by the time it closes; focus still goes back to the
+  // button that actually opened it.
+  const closeCreateDrawer = () => {
+    createDrawer?.triggerRef?.current?.focus();
+    setCreateDrawer(null);
+  };
+  const onCategoryCreated = async () => {
+    const triggerRef = createDrawer?.triggerRef;
+    setCreateDrawer(null);
+    await load();
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      if (triggerRef?.current?.isConnected) triggerRef.current.focus();
+    }));
   };
 
   const gridHead = (
@@ -247,12 +235,20 @@ export default function Categories() {
     </div>
   );
 
-  const section = (type, title) => {
+  const section = (type, title, triggerRef) => {
     const active = categories.filter((c) => c.type === type && !c.archived && inAccount(c));
     const archived = categories.filter((c) => c.type === type && c.archived && inAccount(c));
     return (
       <section className="card">
-        <h2>{title}</h2>
+        <div className="card-head">
+          <h2>{title}</h2>
+          <button
+            type="button" ref={triggerRef} className="btn btn-primary"
+            onClick={() => openCreateDrawer(type, triggerRef)}
+          >
+            + Add category
+          </button>
+        </div>
         <div className="category-scroll">
           {gridHead}
           {active.map((c, i) => (
@@ -268,7 +264,6 @@ export default function Categories() {
             />
           ))}
         </div>
-        <AddForm type={type} onAdded={load} accountId={selectedId === defaultId ? null : selectedId} />
       </section>
     );
   };
@@ -286,8 +281,18 @@ export default function Categories() {
         records it as “effective from a date” — history stays intact and the future recalculates.
         {baseAccounts.length > 1 && ' Showing the account selected in the top bar; new categories are created in it.'}
       </p>
-      {section('expense', 'Expenses')}
-      {section('income', 'Income')}
+      {section('expense', 'Expenses', addExpenseBtnRef)}
+      {section('income', 'Income', addIncomeBtnRef)}
+      {createDrawer && (
+        <CategoryCreateDrawer
+          seedType={createDrawer.seedType}
+          accountId={selectedId === defaultId ? null : selectedId}
+          accountName={baseAccounts.length > 1 ? baseAccounts.find((a) => a.id === selectedId)?.name : undefined}
+          defaultValidFrom={periodStart}
+          onClose={closeCreateDrawer}
+          onCreated={onCategoryCreated}
+        />
+      )}
     </div>
   );
 }

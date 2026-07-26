@@ -65,7 +65,7 @@ export default function Reports() {
   const [year, setYear] = useState(new Date().getFullYear());
   const [data, setData] = useState(null);
   const [mode, setMode] = useState('cleared');
-  const [scope, setScope] = useState('all');
+  const [scope, setScope] = useState('account');
   const [error, setError] = useState(null);
 
   const load = useCallback(async () => {
