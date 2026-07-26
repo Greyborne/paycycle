@@ -262,6 +262,43 @@ here, dated. A checker's FAIL is not overridden by a worker's — or the
 boss's — say-so: disputes are resolved by re-reading this file and ruling
 explicitly, in writing, before continuing.
 
+- **2026-07-26 — Manual "add" moves to account-locked drawers
+  (Categories + Transactions), and manual creation may assign a recurring
+  category.** Standing rules added ahead of the Reports-default /
+  Categories-drawer / Transactions-add build. Decisions locked with the
+  user:
+  - **Account-locked authoring is now the app-wide pattern** (already true
+    for rules and new categories). Create drawers fix to the top-bar
+    account and list only that account's categories/tags. The new
+    Categories and Transactions add-drawers both follow it.
+  - **Categories:** the inline blank add-rows at the foot of the Expense
+    and Income cards are replaced by an "+ Add" button in each card
+    header, opening a shared create drawer with an **Expense⇄Income toggle
+    seeded by the card clicked** (Expense card → expense, switchable to
+    income, and vice-versa). The drawer keeps the existing fields
+    (name, recurring-vs-tag, cadence, amount) and creates the category in
+    the selected account. No backend change.
+  - **Transactions:** the page gains an "+ Add transaction" button opening
+    a drawer that can create a transaction of ANY kind — assigned to a
+    recurring category, to a tag, or uncategorized (misc). A recurring
+    assignment **records the actual and clears that bill's line item for
+    the period it falls in, via the SAME `assignCategory` /
+    `clearLineItemForTransaction` path used when categorizing an existing
+    transaction** (single source of truth — do not duplicate clearing
+    logic). To allow this, `POST /transactions` is relaxed: the guard that
+    rejected recurring categories ("recurring categories are assigned on
+    the Transactions page") is lifted, but the server still (a) validates
+    the recurring category is owned by the transaction's account
+    (`templateOwnsAccount`) and rejects a mismatch, and (b) honors the
+    existing closed-period and drift behavior. The pay-period page's
+    existing tag-only add drawer is left unchanged.
+  - **Reports** opens scoped to the selected account (initial
+    `scope='account'`); the "All accounts" toggle stays available.
+  - Every task here that touches a file carrying protected copy
+    (`Categories.jsx`, `Transactions.jsx`) gets a **content-checker
+    verbatim-vs-HEAD sweep** in addition to its type-matched checker, per
+    the rule immediately below. Boss-approved.
+
 - **2026-07-26 — A code/refactor task that moves or reformats a
   protected copy string still owes a verbatim content check.** Caught at
   the end of the account-scoped Rules build. Task 2 (a code task, checked
