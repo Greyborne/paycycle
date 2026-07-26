@@ -27,28 +27,42 @@ router.post('/', async (req, res, next) => {
     const date = requireDate(body.date || todayISO(), 'date');
     const description = typeof body.description === 'string' ? body.description.trim() || null : null;
 
-    // An optional tag category labels the misc transaction (tags count as
-    // misc in the balance math). Only tags are allowed here — recurring
-    // categories clear line items and are assigned from the Transactions page.
+    // An optional category labels the transaction: a tag just labels it (tags
+    // count as misc in the balance math); a recurring category ALSO clears
+    // that bill's line item for the period it falls in, via the SAME
+    // assignCategory/clearLineItemForTransaction path used when categorizing
+    // an existing transaction (single source of truth — see assignCategory
+    // below). templatesById is loaded here (not just the one row) because
+    // assignCategory needs the full template shape, including amount
+    // history, for driftFor.
     let categoryTemplateId = null;
+    let recurringTemplate = null;
+    let templatesById = null;
     if (body.categoryTemplateId !== undefined && body.categoryTemplateId !== null) {
-      const { rows: cat } = await q(
-        "SELECT id, type FROM category_templates WHERE id = $1 AND budget_id = $2 AND category_type = 'tag' AND NOT archived",
-        [body.categoryTemplateId, req.budget.id]
-      );
-      if (!cat.length) bad('Pick a tag category (recurring categories are assigned on the Transactions page)');
-      categoryTemplateId = cat[0].id;
-      type = cat[0].type; // the tag's type wins
+      templatesById = new Map((await loadTemplates(req.budget.id)).map((t) => [t.id, t]));
+      const template = templatesById.get(Number(body.categoryTemplateId));
+      if (!template) bad('Unknown category');
+      categoryTemplateId = template.id;
+      type = template.type; // the category's type wins
+      if (template.category_type === 'recurring') recurringTemplate = template;
     }
 
     let accountId = body.accountId;
+    const defaultAccountId = await getDefaultAccountId(req.budget.id);
     if (accountId !== undefined && accountId !== null) {
       const { rows } = await q(
         'SELECT id FROM accounts WHERE id = $1 AND budget_id = $2', [accountId, req.budget.id]
       );
       if (!rows.length) bad('Unknown account');
     } else {
-      accountId = await getDefaultAccountId(req.budget.id);
+      accountId = defaultAccountId;
+    }
+
+    // A recurring category clears a line item that belongs to a specific
+    // account (its own account_id, or the default account when unset) — it
+    // may only be assigned to a transaction on that same account.
+    if (recurringTemplate && !templateOwnsAccount(recurringTemplate, accountId, defaultAccountId)) {
+      bad('That category belongs to a different account');
     }
 
     await ensureMaterialized(req.budget.id, cfg);
@@ -58,13 +72,31 @@ router.post('/', async (req, res, next) => {
     );
     if (!period.length) bad('Transactions can only be added to current or past pay periods');
     if (period[0].closed_at) bad('That date falls in a closed pay period — reopen it to add transactions');
+
+    // A recurring category is assigned AFTER insert, through assignCategory
+    // (below), so the row is first inserted uncategorized; a tag (or no
+    // category) is recorded directly since it never touches a line item.
+    const directCategoryId = recurringTemplate ? null : categoryTemplateId;
     const { rows } = await q(
       `INSERT INTO transactions (budget_id, user_id, pay_period_id, type, amount_cents, description, date, account_id, category_template_id, categorized_by)
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING *`,
       [req.budget.id, req.userId, period[0].id, type, amount, description, date, accountId,
-       categoryTemplateId, categoryTemplateId ? 'manual' : null]
+       directCategoryId, directCategoryId ? 'manual' : null]
     );
-    res.status(201).json({ transaction: rows[0] });
+
+    let transaction = rows[0];
+    let drift = null;
+    if (recurringTemplate) {
+      // Same clearing path as categorizing an existing transaction: records
+      // the actual and clears (or moves) the line item, and honors the same
+      // closed-period guard (moot here — the period was just checked open —
+      // and drift detection).
+      drift = await assignCategory(req.budget, templatesById, transaction, recurringTemplate.id, 'manual');
+      const { rows: refreshed } = await q('SELECT * FROM transactions WHERE id = $1', [transaction.id]);
+      transaction = refreshed[0];
+    }
+
+    res.status(201).json(drift ? { transaction, drift } : { transaction });
   } catch (err) {
     next(err);
   }

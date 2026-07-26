@@ -7,6 +7,7 @@ import { useAccounts } from '../useAccounts.js';
 import { categoriesForAccount, categoriesForAccounts } from '../categoryScope.js';
 import DriftNotices from '../components/DriftNotices.jsx';
 import RuleDrawer from '../components/RuleDrawer.jsx';
+import TransactionCreateDrawer from '../components/TransactionCreateDrawer.jsx';
 
 function CategorySelect({ value, categories, onChange, disabled, ariaLabel }) {
   const group = (type, categoryType) => categories
@@ -100,8 +101,10 @@ export default function Transactions() {
   const [notice, setNotice] = useState(null);
   const [error, setError] = useState(null);
   const [ruleDrawerTxn, setRuleDrawerTxn] = useState(null);
+  const [addDrawerOpen, setAddDrawerOpen] = useState(false);
   const triggerRefs = useRef(new Map());
   const noticeRef = useRef(null);
+  const addTxnBtnRef = useRef(null);
 
   const load = useCallback(async () => {
     setError(null);
@@ -198,6 +201,23 @@ export default function Transactions() {
     requestAnimationFrame(() => requestAnimationFrame(() => returnFocus(id)));
   };
 
+  // Same open/close/return-focus idiom as the rule drawer above, and as
+  // Categories.jsx's create-drawer wiring: a plain close (Escape/backdrop/
+  // Cancel) focuses the trigger synchronously before unmount; a successful
+  // create reloads first (the new row needs to exist) then defers the
+  // refocus across two rAFs so it lands after React's post-reload paint.
+  const closeAddDrawer = () => {
+    setAddDrawerOpen(false);
+    addTxnBtnRef.current?.focus();
+  };
+  const onTxnCreated = async () => {
+    setAddDrawerOpen(false);
+    await load();
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      if (addTxnBtnRef.current?.isConnected) addTxnBtnRef.current.focus();
+    }));
+  };
+
   const rerunRules = async () => {
     setNotice(null);
     const res = await api('/transactions/recategorize', { method: 'POST' });
@@ -232,6 +252,12 @@ export default function Transactions() {
   return (
     <div className="transactions-page">
       <div className="page-actions">
+        <button
+          type="button" ref={addTxnBtnRef} className="btn btn-primary"
+          onClick={() => setAddDrawerOpen(true)}
+        >
+          + Add transaction
+        </button>
         <button className="btn" onClick={rerunRules} title="Apply categorization rules to uncategorized transactions (manual assignments are never touched)">
           Re-run rules on uncategorized
         </button>
@@ -385,6 +411,16 @@ export default function Transactions() {
           currency={ruleDrawerTxn.account_currency || user.currency}
           onClose={closeRuleDrawer}
           onApplied={applyRuleDrawer}
+        />
+      )}
+
+      {addDrawerOpen && (
+        <TransactionCreateDrawer
+          categories={categoriesForAccount(categories, filterAccountId, defaultAccountId)}
+          accountId={filterAccountId === defaultAccountId ? null : filterAccountId}
+          accountName={base.length > 1 ? base.find((a) => a.id === filterAccountId)?.name : undefined}
+          onClose={closeAddDrawer}
+          onCreated={onTxnCreated}
         />
       )}
     </div>
