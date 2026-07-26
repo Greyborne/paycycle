@@ -7,6 +7,11 @@ services:
     build: .
     image: paycycle:latest
     restart: unless-stopped
+    # Bound the Node app's memory so an OOM is contained to this container and
+    # it restarts cleanly (see restart: unless-stopped above), rather than
+    # taking down the host. Raise these if you have a large household.
+    mem_limit: 512m
+    mem_reservation: 256m
     ports:
       - "${PAYCYCLE_PORT:-8080}:8080"
     environment:

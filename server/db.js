@@ -7,15 +7,23 @@ pg.types.setTypeParser(1082, (v) => v);
 // BIGINT (SUM() results) as Number - cent sums stay far below 2^53.
 pg.types.setTypeParser(20, (v) => Number(v));
 
+// connectionTimeoutMillis: fail fast if no pool connection is available within 10s.
+// statement_timeout: server-side kill for a runaway query (30s) so it can't hold a connection forever.
+const poolTimeouts = {
+  connectionTimeoutMillis: 10000,
+  statement_timeout: 30000,
+};
+
 export const pool = new pg.Pool(
   config.databaseUrl
-    ? { connectionString: config.databaseUrl }
+    ? { connectionString: config.databaseUrl, ...poolTimeouts }
     : {
         host: config.db.host,
         port: config.db.port,
         user: config.db.user,
         password: config.db.password,
         database: config.db.database,
+        ...poolTimeouts,
       }
 );
 
