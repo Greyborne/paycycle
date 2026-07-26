@@ -270,6 +270,44 @@ export async function recomputeLineItemActual(dbc, periodId, categoryTemplateId)
   return clearedAmount;
 }
 
+// Non-destructive repair: recompute cleared_amount_cents for every line item
+// in every OPEN (non-closed) period of a budget from the transactions that
+// currently exist, matching recomputeClearedAmount's NULL-vs-0 semantics
+// exactly (NULL when no matching transactions, never 0). Fixes orphans left
+// by a deleted transaction or an unchecked "cleared" without deleting/
+// altering any transaction, planned_amount_cents, or the cleared bool - only
+// cleared_amount_cents, and only in open periods (closed periods are frozen
+// snapshots and are never touched here). Runs in a single DB transaction on
+// the given client. Scoped to budgetId throughout, so it can never touch
+// another budget's line items. Returns how many open-period line items were
+// visited and how many actually changed value.
+export async function recalculateOpenPeriodActuals(client, budgetId) {
+  const { rows } = await client.query(
+    `UPDATE line_items li
+     SET cleared_amount_cents = sums.total
+     FROM (
+       SELECT li2.id,
+              CASE WHEN COUNT(t.id) > 0 THEN COALESCE(SUM(t.amount_cents), 0) ELSE NULL END AS total
+       FROM line_items li2
+       JOIN pay_periods pp2 ON pp2.id = li2.pay_period_id
+       LEFT JOIN transactions t
+         ON t.pay_period_id = li2.pay_period_id AND t.category_template_id = li2.category_template_id
+       WHERE pp2.budget_id = $1 AND pp2.closed_at IS NULL
+       GROUP BY li2.id
+     ) sums
+     WHERE li.id = sums.id AND li.cleared_amount_cents IS DISTINCT FROM sums.total
+     RETURNING li.id`,
+    [budgetId]
+  );
+  const { rows: countRows } = await client.query(
+    `SELECT COUNT(*)::int AS n FROM line_items li
+     JOIN pay_periods pp ON pp.id = li.pay_period_id
+     WHERE pp.budget_id = $1 AND pp.closed_at IS NULL`,
+    [budgetId]
+  );
+  return { recalculated: countRows[0].n, corrected: rows.length };
+}
+
 // Clear the line item for a recurring category when a matching transaction
 // posts. Bills sometimes post in the period after the one they were planned
 // in (due 7/2, period ends 7/3, actually posts 7/5): when the transaction's

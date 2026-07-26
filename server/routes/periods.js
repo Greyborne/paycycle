@@ -3,7 +3,8 @@ import { pool, q } from '../db.js';
 import { bad, requireCents, requireDate, requireId } from '../validation.js';
 import {
   buildProjection, clearedBalancesForPeriod, ensureMaterialized, getConfig, getDefaultAccountId,
-  getLifecycle, getPeriodDetail, materializePeriodAfter, resolveAccountId, setAmountGoingForward,
+  getLifecycle, getPeriodDetail, materializePeriodAfter, recalculateOpenPeriodActuals,
+  recomputeLineItemActual, resolveAccountId, setAmountGoingForward,
 } from '../services/budget.js';
 import { addDays, periodBefore, periodContaining, todayISO } from '../services/schedule.js';
 
@@ -398,11 +399,31 @@ router.patch('/line-items/:id', async (req, res, next) => {
       }
     }
 
-    const { rows: updated } = await q(
-      'UPDATE line_items SET planned_amount_cents = $1, cleared = $2, cleared_date = $3, account_id = $4 WHERE id = $5 RETURNING *',
-      [planned, cleared, clearedDate, accountId, id]
-    );
-    res.json({ lineItem: updated[0] });
+    // Whether cleared was ticked, unticked, or left alone, cleared_amount_cents
+    // must always equal the SUM of this period+template's transactions (NULL
+    // when there are none) - recompute it here so unchecking cleared with no
+    // remaining transactions shows "—" instead of a stale actual. The update
+    // and the recompute run in one transaction so a crash between them can
+    // never leave cleared/cleared_date changed while the actual stays stale.
+    const client = await pool.connect();
+    let updatedRow;
+    try {
+      await client.query('BEGIN');
+      await client.query(
+        'UPDATE line_items SET planned_amount_cents = $1, cleared = $2, cleared_date = $3, account_id = $4 WHERE id = $5',
+        [planned, cleared, clearedDate, accountId, id]
+      );
+      await recomputeLineItemActual(client, item.pay_period_id, item.category_template_id);
+      const { rows: updated } = await client.query('SELECT * FROM line_items WHERE id = $1', [id]);
+      updatedRow = updated[0];
+      await client.query('COMMIT');
+    } catch (err) {
+      await client.query('ROLLBACK').catch(() => {});
+      throw err;
+    } finally {
+      client.release();
+    }
+    res.json({ lineItem: updatedRow });
   } catch (err) {
     next(err);
   }
@@ -464,6 +485,33 @@ router.post('/:start/line-items', async (req, res, next) => {
       await q(UPSERT, params);
     }
     res.status(201).json({ ok: true });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// Non-destructive repair: recompute cleared_amount_cents for every line item
+// in every OPEN (non-closed) period of this budget from the transactions that
+// currently exist. Fixes orphans left by either bug this endpoint was built
+// for (a deleted transaction, or an uncheck) without deleting/altering any
+// transaction, planned_amount_cents, or the cleared bool - only
+// cleared_amount_cents, and only in open periods (closed periods are frozen
+// snapshots - §5 - and are never touched). Scoped to req.budget.id throughout
+// so it is impossible to recompute another budget's line items.
+router.post('/recalculate', async (req, res, next) => {
+  try {
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      const result = await recalculateOpenPeriodActuals(client, req.budget.id);
+      await client.query('COMMIT');
+      res.json(result);
+    } catch (err) {
+      await client.query('ROLLBACK').catch(() => {});
+      throw err;
+    } finally {
+      client.release();
+    }
   } catch (err) {
     next(err);
   }

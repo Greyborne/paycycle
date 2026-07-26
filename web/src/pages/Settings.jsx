@@ -34,6 +34,11 @@ export default function Settings() {
   const [passwordError, setPasswordError] = useState(null);
   const [passwordMessage, setPasswordMessage] = useState(null);
   const [passwordSubmitting, setPasswordSubmitting] = useState(false);
+  const [recalculating, setRecalculating] = useState(false);
+  const [recalculateError, setRecalculateError] = useState(null);
+  const [recalculateMessage, setRecalculateMessage] = useState(null);
+  const recalculateBtnRef = useRef(null);
+  const prevRecalculating = useRef(false);
 
   // Focus management for the per-account schedule editor: expanding/collapsing
   // a row swaps the "Change…" button for the CadenceFields/Cancel/Save markup
@@ -73,6 +78,20 @@ export default function Settings() {
     }
     prevEditingAccountId.current = editingAccountId;
   }, [editingAccountId]);
+
+  // The Recalculate button doesn't unmount like the schedule editor above,
+  // but it does use native `disabled`, which drops focus to <body> the
+  // instant the click handler sets `recalculating` true. By the time this
+  // effect sees `recalculating` go back to false, the re-render that removes
+  // `disabled` has already committed, so a plain focus() call restores it
+  // instead of leaving focus stranded on <body> (same idiom as the
+  // editingAccountId effect above).
+  useEffect(() => {
+    if (prevRecalculating.current && !recalculating) {
+      recalculateBtnRef.current?.focus();
+    }
+    prevRecalculating.current = recalculating;
+  }, [recalculating]);
 
   useEffect(() => {
     api('/settings').then(({ user, payPeriodConfigs, emailEnabled: enabled }) => {
@@ -174,6 +193,22 @@ export default function Settings() {
       setPasswordError(err.message);
     } finally {
       setPasswordSubmitting(false);
+    }
+  };
+
+  const recalculateActuals = async () => {
+    setRecalculating(true);
+    setRecalculateError(null);
+    setRecalculateMessage(null);
+    try {
+      const { recalculated, corrected } = await api('/periods/recalculate', { method: 'POST' });
+      setRecalculateMessage(
+        `Recalculated ${recalculated} line item(s)${corrected ? ` — corrected ${corrected}` : ''}.`
+      );
+    } catch (err) {
+      setRecalculateError(err.message);
+    } finally {
+      setRecalculating(false);
     }
   };
 
@@ -383,6 +418,23 @@ export default function Settings() {
           {passwordMessage && <p className="form-ok" role="status">{passwordMessage}</p>}
           <button className="btn btn-primary" disabled={passwordSubmitting}>Change password</button>
         </form>
+      </section>
+
+      <section className="card">
+        <h2>Maintenance</h2>
+        <p className="muted small">
+          Rebuild the Actual column for open periods from your current transactions. Fixes leftover
+          values from deleted or re-imported transactions. Safe — it never changes closed periods or
+          your transactions.
+        </p>
+        <button
+          type="button" className="btn" ref={recalculateBtnRef}
+          disabled={recalculating} onClick={recalculateActuals}
+        >
+          {recalculating ? 'Recalculating…' : 'Recalculate actuals'}
+        </button>
+        {recalculateError && <p className="form-error" role="alert">{recalculateError}</p>}
+        {recalculateMessage && <p className="form-ok" role="status">{recalculateMessage}</p>}
       </section>
 
       <AccountsCard />

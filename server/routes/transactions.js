@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { q } from '../db.js';
+import { pool, q } from '../db.js';
 import { bad, requireCents, requireDate, requireId } from '../validation.js';
 import {
   getConfig, ensureMaterialized, getDefaultAccountId, loadTemplates, driftFor,
@@ -74,14 +74,33 @@ router.delete('/:id', async (req, res, next) => {
   try {
     const id = requireId(req.params.id, 'transaction');
     const { rows } = await q(
-      `SELECT t.id, pp.closed_at FROM transactions t
+      `SELECT t.id, t.pay_period_id, t.category_template_id, pp.closed_at FROM transactions t
        LEFT JOIN pay_periods pp ON pp.id = t.pay_period_id
        WHERE t.id = $1 AND t.budget_id = $2`,
       [id, req.budget.id]
     );
     if (!rows.length) return res.status(404).json({ error: 'Transaction not found' });
     if (rows[0].closed_at) bad('This transaction is in a closed pay period — reopen it to make changes');
-    await q('DELETE FROM transactions WHERE id = $1', [rows[0].id]);
+    const txn = rows[0];
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      await client.query('DELETE FROM transactions WHERE id = $1', [txn.id]);
+      // Dropping this transaction means it no longer counts toward its
+      // recurring template's line item in this period - recompute so
+      // cleared_amount_cents reflects the SUM of what's left (or NULL, per
+      // the column's NULL-vs-0 contract). No-op for tag/uncategorized
+      // transactions - no line_item row matches, the UPDATE affects 0 rows.
+      if (txn.category_template_id && txn.pay_period_id) {
+        await recomputeLineItemActual(client, txn.pay_period_id, txn.category_template_id);
+      }
+      await client.query('COMMIT');
+    } catch (err) {
+      await client.query('ROLLBACK').catch(() => {});
+      throw err;
+    } finally {
+      client.release();
+    }
     res.status(204).end();
   } catch (err) {
     next(err);
