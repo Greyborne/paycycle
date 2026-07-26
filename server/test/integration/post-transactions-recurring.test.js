@@ -185,4 +185,56 @@ test('POST /transactions: a recurring category owned by a DIFFERENT account is r
   assert.equal(txns.length, 0, 'no transaction row must have been inserted');
 });
 
+test('POST /transactions: a failure while clearing the line item rolls back the INSERT too', async (t) => {
+  const ctx = await seed();
+  const server = await startTestServer(ctx.budget, ctx.userId);
+  t.after(async () => {
+    await new Promise((r) => server.close(r));
+    await cleanup(ctx);
+  });
+
+  // Inject a failure at the DB level, downstream of the INSERT into
+  // transactions, so we prove the whole write unit shares one transaction
+  // and rolls back together. clearLineItemForTransaction/recomputeLineItemActual
+  // are imported by value at module load in transactions.js, so stubbing
+  // their exports at runtime would not intercept the reference the route
+  // actually calls — a trigger on the underlying table is the only reliable
+  // injection point.
+  //
+  // node --test runs test FILES concurrently against this same ephemeral DB,
+  // so a table-wide trigger would spuriously break unrelated tests running
+  // in parallel. Scope the trigger with a WHEN clause to only this test's
+  // own period+category, so it's inert for every other row in the table.
+  await q(`CREATE OR REPLACE FUNCTION _pc_fail_clear() RETURNS trigger AS $$
+    BEGIN RAISE EXCEPTION 'injected clear failure'; END; $$ LANGUAGE plpgsql;`);
+  await q(
+    `CREATE TRIGGER _pc_fail_clear_trg BEFORE INSERT OR UPDATE ON line_items
+     FOR EACH ROW WHEN (NEW.pay_period_id = ${Number(ctx.periodId)} AND NEW.category_template_id = ${Number(ctx.categoryId)})
+     EXECUTE FUNCTION _pc_fail_clear();`
+  );
+  t.after(async () => {
+    await q('DROP TRIGGER IF EXISTS _pc_fail_clear_trg ON line_items');
+    await q('DROP FUNCTION IF EXISTS _pc_fail_clear()');
+  });
+
+  const { rows: periodRow } = await q('SELECT start_date FROM pay_periods WHERE id = $1', [ctx.periodId]);
+  const date = periodRow[0].start_date;
+
+  const { status } = await post(server, {
+    amountCents: 26000,
+    type: 'expense',
+    date,
+    accountId: ctx.accountA,
+    categoryTemplateId: ctx.categoryId,
+  });
+
+  assert.equal(status, 500);
+
+  const { rows: txns } = await q(
+    'SELECT id FROM transactions WHERE budget_id = $1 AND account_id = $2 AND category_template_id = $3',
+    [ctx.budgetId, ctx.accountA, ctx.categoryId]
+  );
+  assert.equal(txns.length, 0, 'the INSERT must have been rolled back along with the failed clear');
+});
+
 test.after(() => pool.end());

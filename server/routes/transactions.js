@@ -77,23 +77,39 @@ router.post('/', async (req, res, next) => {
     // (below), so the row is first inserted uncategorized; a tag (or no
     // category) is recorded directly since it never touches a line item.
     const directCategoryId = recurringTemplate ? null : categoryTemplateId;
-    const { rows } = await q(
-      `INSERT INTO transactions (budget_id, user_id, pay_period_id, type, amount_cents, description, date, account_id, category_template_id, categorized_by)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING *`,
-      [req.budget.id, req.userId, period[0].id, type, amount, description, date, accountId,
-       directCategoryId, directCategoryId ? 'manual' : null]
-    );
 
-    let transaction = rows[0];
+    // The INSERT and (for a recurring category) the assignCategory call and
+    // its refresh SELECT are one unit of work: if assignCategory throws after
+    // the INSERT, we must not leave an uncategorized row behind. Run them all
+    // in a single DB transaction, same BEGIN/COMMIT/ROLLBACK idiom as
+    // DELETE /:id below.
+    let transaction;
     let drift = null;
-    if (recurringTemplate) {
-      // Same clearing path as categorizing an existing transaction: records
-      // the actual and clears (or moves) the line item, and honors the same
-      // closed-period guard (moot here — the period was just checked open —
-      // and drift detection).
-      drift = await assignCategory(req.budget, templatesById, transaction, recurringTemplate.id, 'manual');
-      const { rows: refreshed } = await q('SELECT * FROM transactions WHERE id = $1', [transaction.id]);
-      transaction = refreshed[0];
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      const { rows } = await client.query(
+        `INSERT INTO transactions (budget_id, user_id, pay_period_id, type, amount_cents, description, date, account_id, category_template_id, categorized_by)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING *`,
+        [req.budget.id, req.userId, period[0].id, type, amount, description, date, accountId,
+         directCategoryId, directCategoryId ? 'manual' : null]
+      );
+      transaction = rows[0];
+      if (recurringTemplate) {
+        // Same clearing path as categorizing an existing transaction: records
+        // the actual and clears (or moves) the line item, and honors the same
+        // closed-period guard (moot here — the period was just checked open —
+        // and drift detection).
+        drift = await assignCategory(req.budget, templatesById, transaction, recurringTemplate.id, 'manual', client);
+        const { rows: refreshed } = await client.query('SELECT * FROM transactions WHERE id = $1', [transaction.id]);
+        transaction = refreshed[0];
+      }
+      await client.query('COMMIT');
+    } catch (err) {
+      await client.query('ROLLBACK').catch(() => {});
+      throw err;
+    } finally {
+      client.release();
     }
 
     res.status(201).json(drift ? { transaction, drift } : { transaction });
@@ -181,7 +197,7 @@ router.get('/', async (req, res, next) => {
 // categories also clear the period's matching line item and check the actual
 // amount against the plan (drift). Returns any drift suggestion so the UI
 // can offer "update the recurring amount going forward".
-async function assignCategory(budget, templatesById, txn, categoryId, provenance) {
+async function assignCategory(budget, templatesById, txn, categoryId, provenance, db = { query: q }) {
   const oldTemplate = txn.category_template_id ? templatesById.get(txn.category_template_id) : null;
   const template = categoryId ? templatesById.get(categoryId) : null;
   if (categoryId && !template) bad(`Unknown category id ${categoryId}`);
@@ -194,7 +210,7 @@ async function assignCategory(budget, templatesById, txn, categoryId, provenance
   // Un-categorizing by hand still records 'manual' so rules never re-touch
   // the transaction; a rule run that leaves it uncategorized records nothing.
   const provenanceValue = categoryId !== null || provenance === 'manual' ? provenance : null;
-  await q(
+  await db.query(
     `UPDATE transactions SET category_template_id = $1, type = $2, categorized_by = $3 WHERE id = $4`,
     [categoryId, template ? template.type : txn.type, provenanceValue, txn.id]
   );
@@ -207,12 +223,12 @@ async function assignCategory(budget, templatesById, txn, categoryId, provenance
   // actually change (oldTemplate.id === categoryId) since nothing moved, and
   // when the old category wasn't recurring (tag/none has no line item).
   if (oldTemplate?.category_type === 'recurring' && oldTemplate.id !== categoryId && txn.pay_period_id) {
-    await recomputeLineItemActual({ query: q }, txn.pay_period_id, oldTemplate.id);
+    await recomputeLineItemActual(db, txn.pay_period_id, oldTemplate.id);
   }
 
   let drift = null;
   if (template?.category_type === 'recurring' && txn.pay_period_id) {
-    await clearLineItemForTransaction({ query: q }, template, {
+    await clearLineItemForTransaction(db, template, {
       periodId: txn.pay_period_id,
       date: txn.date,
       amountCents: txn.amount_cents,
