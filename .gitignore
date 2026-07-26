@@ -7,3 +7,4 @@ web/dist/
 Working/
 .claude/settings.local.json
 .claude/worktrees/
+graphify-out/
