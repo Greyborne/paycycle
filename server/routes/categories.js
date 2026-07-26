@@ -94,6 +94,7 @@ router.post('/', async (req, res, next) => {
     const effective = req.body.effectiveStartDate
       ? requireDate(req.body.effectiveStartDate, 'effectiveStartDate')
       : defaultEffective;
+    const endDate = req.body.endDate ? requireDate(req.body.endDate, 'endDate') : null;
 
     await client.query('BEGIN');
     const { rows: maxOrder } = await client.query(
@@ -101,9 +102,9 @@ router.post('/', async (req, res, next) => {
       [req.budget.id, type]
     );
     const { rows } = await client.query(
-      `INSERT INTO category_templates (budget_id, name, type, recurrence, due_day, sort_order, account_id, category_type, start_date)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING id`,
-      [req.budget.id, name.trim(), type, recurrence, dueDay, maxOrder[0].next, accountId, categoryType, startDate]
+      `INSERT INTO category_templates (budget_id, name, type, recurrence, due_day, sort_order, account_id, category_type, start_date, end_date)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING id`,
+      [req.budget.id, name.trim(), type, recurrence, dueDay, maxOrder[0].next, accountId, categoryType, startDate, endDate]
     );
     // Tags have no planned amount, so no amount history either.
     if (categoryType !== 'tag') {
