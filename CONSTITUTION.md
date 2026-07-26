@@ -262,6 +262,67 @@ here, dated. A checker's FAIL is not overridden by a worker's — or the
 boss's — say-so: disputes are resolved by re-reading this file and ruling
 explicitly, in writing, before continuing.
 
+- **2026-07-26 — A code/refactor task that moves or reformats a
+  protected copy string still owes a verbatim content check.** Caught at
+  the end of the account-scoped Rules build. Task 2 (a code task, checked
+  by build/a11y/design — no content-checker) extracted the rules-page
+  markup into new helpers and, in reflowing the JSX, silently flattened a
+  curly apostrophe in the `MatchPreview` empty string (`aren’t` → `aren't`,
+  U+2019 → U+0027). It passed all three of its checkers because none of
+  them diffs visible strings against HEAD character-for-character — that
+  is the content-checker's job, and content-checker is only auto-attached
+  to content-worker tasks. The regression surfaced only because a later
+  content task happened to sweep the file. Rule this sets: when a
+  code/design/a11y task **touches a file that contains protected copy**
+  (§1) — even if its brief is "layout/refactor only" — the boss attaches a
+  **content-checker verbatim sweep vs HEAD** to that task, not just the
+  type-matched checker. Reformatting is exactly how protected copy dies
+  quietly: no one decided to change the words, so no content check was
+  scheduled. Separately logged this build: content-worker's Edit tooling
+  could not emit curly-quote codepoints (U+201C/U+201D) across two rounds;
+  once wording is already decided, inserting specified Unicode is a
+  mechanical byte-edit the boss may route to a code-worker (scripted
+  insertion) with content-checker still verifying verbatim — that is not
+  paraphrase and does not violate rule 3. Boss-approved.
+
+- **2026-07-26 — Categorization rules are account-scoped through their
+  category, and the Rules UI must reflect that.** Standing rules added
+  ahead of the account-scoped/grouped Rules-page build. Facts of the
+  engine, verified in code this session and now binding as the standard:
+  - A `category_rules` row is stored per **budget**, not per account. The
+    account a rule actually affects is determined by its **category's
+    owning account** — `template.account_id ?? getDefaultAccountId()`,
+    the backend `templateOwnsAccount` predicate. During rule application
+    (`POST /transactions/recategorize`) a rule that matches a transaction
+    but resolves to a category owned by a *different* account than the
+    transaction's own is **skipped** (`skippedOtherAccount`), leaving the
+    transaction uncategorized — it does not fall through to the next rule.
+  - The `account_contains` / `institution_contains` /
+    `account_number_contains` fields are a *secondary within-account
+    filter* on the transaction's account metadata — never the scope. UI
+    must present them as such (an in-row detail), and must never use them
+    as the axis that decides which account a rule belongs to.
+  - **Grouping axis = the category's owning account.** The Rules page
+    groups and sorts by that resolved account, honoring the global
+    `useAccount()` selector, mirroring the existing `inAccount` pattern in
+    `web/src/pages/Categories.jsx` (`(c.accountId ?? defaultId) ===
+    selectedId`). The selected account's group is expanded on top; other
+    accounts are collapsed groups with a count.
+  - **Authoring is account-locked.** New rules are created only for the
+    focused account, via a side drawer (adapt `RuleDrawer.jsx`), whose
+    category dropdown lists only that account's categories. The category
+    dropdown on existing rule rows is likewise constrained to the row's
+    own owning account, so no rule can be edited into a cross-account
+    ("can never fire") state. A visible "can never fire" flag remains as a
+    safety net for any pre-existing rows already in that state, not as a
+    routine path.
+  - **Reorder is global under the hood, group-scoped in the UI.**
+    `sort_order` stays budget-wide (first-match-wins is global); the ↑/↓
+    controls reorder a rule only against its group-mates. No schema
+    change. Because cross-account rules cannot fire on each other's
+    transactions, relative order between accounts is functionally
+    irrelevant and must not be exposed. Boss-approved.
+
 - **2026-07-24 — A design-system token that fails contrast *uniformly*
   is a design task, not a feature-build blocker.** Ruling made during the
   unplanned-transactions build. An a11y-checker correctly measured that

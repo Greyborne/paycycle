@@ -1,7 +1,9 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { api } from '../api.js';
-import { useAuth } from '../App.jsx';
+import { useAccount, useAuth } from '../App.jsx';
 import { centsToInput, fmtDate, fmtMoney, parseMoney } from '../format.js';
+import { useAccounts } from '../useAccounts.js';
+import RuleCreateDrawer from '../components/RuleCreateDrawer.jsx';
 
 // Spreadsheet-style rule editor: one row per rule, all filled-in fields must
 // match (AND), first matching rule in order wins.
@@ -16,6 +18,14 @@ const AMOUNT_FIELDS = [
   ['amountMinCents', 'Min'],
   ['amountMaxCents', 'Max'],
   ['amountEqualsCents', 'Equals'],
+];
+// Account-metadata fields are a secondary within-account filter, not the
+// scope-deciding axis (that's the category's owning account) - see
+// CONSTITUTION.md §8 2026-07-26. Short tags for the summary badge.
+const ACCOUNT_META_FIELDS = [
+  ['accountContains', 'acct'],
+  ['institutionContains', 'inst'],
+  ['accountNumberContains', 'acct#'],
 ];
 
 function usePreview(fields) {
@@ -79,7 +89,17 @@ function fieldsForPreview(state) {
   return out;
 }
 
-function RuleRow({ rule, categories, currency, onChanged, onMove, isFirst, isLast }) {
+function AccountMetaBadge({ state }) {
+  const parts = ACCOUNT_META_FIELDS.filter(([k]) => state[k]).map(([k, label]) => `${label}: "${state[k]}"`);
+  if (parts.length === 0) return null;
+  return (
+    <span className="badge badge-tag rule-meta-badge" title="Secondary within-account filter (does not decide which account this rule belongs to)">
+      {parts.join(' · ')}
+    </span>
+  );
+}
+
+function RuleRow({ rule, categories, defaultId, currency, onChanged, onMove, isFirst, isLast }) {
   const [state, setState] = useState({
     ...rule,
     amountMinCents: rule.amountMinCents != null ? centsToInput(rule.amountMinCents) : '',
@@ -88,6 +108,19 @@ function RuleRow({ rule, categories, currency, onChanged, onMove, isFirst, isLas
   });
   const [dirty, setDirty] = useState(false);
   const preview = usePreview(dirty ? fieldsForPreview(state) : EMPTY);
+
+  // Category dropdown is constrained to categories owned by THIS rule's own
+  // owning account (CONSTITUTION.md §8 2026-07-26) — editing a rule can never
+  // move it into a cross-account, "can never fire" state. Safety net: if the
+  // rule already points at an out-of-account category (a pre-existing dead
+  // rule), that current option is still shown rather than silently dropped,
+  // and a visible flag is rendered below.
+  const currentCat = categories.find((c) => c.id === Number(state.categoryTemplateId));
+  const inAccountCategories = categories.filter((c) => (c.accountId ?? defaultId) === rule.owningAccountId);
+  const isDead = Boolean(currentCat) && (currentCat.accountId ?? defaultId) !== rule.owningAccountId;
+  const categoryOptions = isDead && !inAccountCategories.some((c) => c.id === currentCat.id)
+    ? [...inAccountCategories, currentCat]
+    : inAccountCategories;
 
   const set = (k, v) => { setState((s) => ({ ...s, [k]: v })); setDirty(true); };
   const save = async () => {
@@ -117,7 +150,7 @@ function RuleRow({ rule, categories, currency, onChanged, onMove, isFirst, isLas
           value={state.categoryTemplateId} aria-label="Category"
           onChange={(e) => set('categoryTemplateId', Number(e.target.value))}
         >
-          {categories.map((c) => (
+          {categoryOptions.map((c) => (
             <option key={c.id} value={c.id}>{c.name}{c.categoryType === 'tag' ? ' (tag)' : ''}</option>
           ))}
         </select>
@@ -135,61 +168,54 @@ function RuleRow({ rule, categories, currency, onChanged, onMove, isFirst, isLas
           onChange={(e) => set('notes', e.target.value)} />
         <button className="btn btn-ghost btn-small" onClick={del} aria-label="Delete rule">✕</button>
       </div>
+      <AccountMetaBadge state={state} />
+      {isDead && (
+        <span
+          className="badge badge-dead rule-dead-badge"
+          title="This rule's category belongs to a different account, so it can never match a transaction."
+        >
+          Can never fire — category is in another account
+        </span>
+      )}
       {dirty && <MatchPreview preview={preview} currency={currency} />}
     </div>
   );
 }
 
-function AddRule({ categories, currency, onAdded }) {
-  const [state, setState] = useState({ ...EMPTY, categoryTemplateId: categories[0]?.id ?? '' });
-  const preview = usePreview(fieldsForPreview(state));
-  const [error, setError] = useState(null);
+const RULE_GRID_HEAD = (
+  <div className="rule-grid rule-grid-head muted small" aria-hidden="true">
+    <span />
+    <span>Category</span>
+    <span>Description</span>
+    <span>Account</span>
+    <span>Institution</span>
+    <span>Acct #</span>
+    <span>Min</span>
+    <span>Max</span>
+    <span>Equals</span>
+    <span>Amt has</span>
+    <span>Notes</span>
+    <span />
+  </div>
+);
 
-  const set = (k, v) => setState((s) => ({ ...s, [k]: v }));
-  const add = async () => {
-    setError(null);
-    try {
-      await api('/rules', { method: 'POST', body: fieldsForPreview(state) });
-      setState({ ...EMPTY, categoryTemplateId: state.categoryTemplateId });
-      onAdded();
-    } catch (err) {
-      setError(err.message);
-    }
-  };
-
-  return (
-    <div className="rule-row rule-add">
-      <div className="rule-grid">
-        <span className="muted small">new</span>
-        <select value={state.categoryTemplateId} aria-label="Category" onChange={(e) => set('categoryTemplateId', Number(e.target.value))}>
-          {categories.map((c) => (
-            <option key={c.id} value={c.id}>{c.name}{c.categoryType === 'tag' ? ' (tag)' : ''}</option>
-          ))}
-        </select>
-        {TEXT_FIELDS.map(([k, label]) => (
-          <input key={k} type="text" value={state[k]} placeholder={label} aria-label={label}
-            onChange={(e) => set(k, e.target.value)} />
-        ))}
-        {AMOUNT_FIELDS.map(([k, label]) => (
-          <input key={k} type="text" inputMode="decimal" value={state[k]} placeholder={label} aria-label={`Amount ${label}`}
-            onChange={(e) => set(k, e.target.value)} />
-        ))}
-        <input type="text" value={state.amountContains} placeholder="Amt contains" aria-label="Amount contains"
-          onChange={(e) => set('amountContains', e.target.value)} />
-        <input type="text" value={state.notes} placeholder="Notes" aria-label="Notes"
-          onChange={(e) => set('notes', e.target.value)} />
-        <button className="btn btn-primary btn-small" onClick={add}>Add</button>
-      </div>
-      <MatchPreview preview={preview} currency={currency} />
-      {error && <p className="form-error small">{error}</p>}
-    </div>
-  );
+function RuleGroupRows({ list, categories, defaultId, currency, onChanged, onMove }) {
+  return list.map((r, i) => (
+    <RuleRow
+      key={r.id} rule={r} categories={categories} defaultId={defaultId} currency={currency}
+      onChanged={onChanged} onMove={onMove} isFirst={i === 0} isLast={i === list.length - 1}
+    />
+  ));
 }
 
 export default function Rules() {
   const { user } = useAuth();
+  const { accountId } = useAccount();
+  const { accounts, base: baseAccounts } = useAccounts();
   const [rules, setRules] = useState(null);
   const [categories, setCategories] = useState([]);
+  const [drawerOpen, setDrawerOpen] = useState(false);
+  const addRuleBtnRef = useRef(null);
 
   const load = useCallback(async () => {
     const [r, c] = await Promise.all([api('/rules'), api('/categories')]);
@@ -199,16 +225,64 @@ export default function Rules() {
 
   useEffect(() => { load(); }, [load]);
 
-  if (!rules) return <div className="rules-page"><div className="page-loading">Loading…</div></div>;
+  if (!rules || accounts === null) return <div className="rules-page"><div className="page-loading">Loading…</div></div>;
+
+  // Grouping axis = the rule's category's owning account (CONSTITUTION.md
+  // §8 2026-07-26), mirroring Categories.jsx's inAccount pattern - not the
+  // account-metadata match fields, which are only a secondary within-account
+  // filter (see AccountMetaBadge).
+  const defaultId = baseAccounts.find((a) => a.isDefault)?.id ?? baseAccounts[0]?.id ?? null;
+  const selectedId = baseAccounts.some((a) => a.id === accountId) ? accountId : defaultId;
+  const catById = new Map(categories.map((c) => [c.id, c]));
+  const owningAccountOf = (rule) => {
+    if (rule.owningAccountId != null) return rule.owningAccountId;
+    const cat = catById.get(rule.categoryTemplateId);
+    return cat?.accountId ?? defaultId;
+  };
+  const accountName = (id) => baseAccounts.find((a) => a.id === id)?.name ?? `Account ${id}`;
 
   const move = async (rule, dir) => {
+    const owner = owningAccountOf(rule);
+    const groupRules = rules.filter((r) => owningAccountOf(r) === owner);
+    const gi = groupRules.findIndex((r) => r.id === rule.id);
+    const gj = gi + dir;
+    if (gj < 0 || gj >= groupRules.length) return;
+    // Swap the two group-mates at their true positions in the global,
+    // budget-wide sort order - reordering only ever moves a rule against
+    // another rule from the same (owning) account.
     const ids = rules.map((r) => r.id);
     const i = ids.indexOf(rule.id);
-    const j = i + dir;
-    if (j < 0 || j >= ids.length) return;
+    const j = ids.indexOf(groupRules[gj].id);
     [ids[i], ids[j]] = [ids[j], ids[i]];
     await api('/rules/reorder', { method: 'POST', body: { ids } });
     load();
+  };
+
+  const selectedRules = rules.filter((r) => owningAccountOf(r) === selectedId);
+  const otherGroups = baseAccounts
+    .filter((a) => a.id !== selectedId)
+    .map((a) => ({ id: a.id, name: a.name, list: rules.filter((r) => owningAccountOf(r) === a.id) }))
+    .filter((g) => g.list.length > 0);
+  const showGroups = otherGroups.length > 0;
+
+  // Authoring is account-locked (CONSTITUTION.md §8 2026-07-26): the create
+  // drawer's category dropdown only ever lists the focused account's own
+  // categories.
+  const categoriesForSelected = categories.filter((c) => (c.accountId ?? defaultId) === selectedId);
+
+  // Return focus to the "+ Add rule" trigger on close — mirrors
+  // Transactions.jsx's closeRuleDrawer/applyRuleDrawer idiom for RuleDrawer.
+  const closeCreateDrawer = () => {
+    // Nothing about the page changes on a plain close (Escape/backdrop/
+    // Cancel), so the trigger button is guaranteed to still be there — focus
+    // it BEFORE unmounting the drawer, same reasoning as Transactions.jsx.
+    addRuleBtnRef.current?.focus();
+    setDrawerOpen(false);
+  };
+  const onRuleCreated = async () => {
+    setDrawerOpen(false);
+    await load();
+    requestAnimationFrame(() => requestAnimationFrame(() => addRuleBtnRef.current?.focus()));
   };
 
   return (
@@ -220,35 +294,42 @@ export default function Rules() {
       </p>
       <section className="card">
         <div className="rules-scroll">
-          <div className="rule-grid rule-grid-head muted small" aria-hidden="true">
-            <span />
-            <span>Category</span>
-            <span>Description</span>
-            <span>Account</span>
-            <span>Institution</span>
-            <span>Acct #</span>
-            <span>Min</span>
-            <span>Max</span>
-            <span>Equals</span>
-            <span>Amt has</span>
-            <span>Notes</span>
-            <span />
+          <div className="card-head">
+            <h2 className="rule-group-head">{accountName(selectedId)}</h2>
+            <button type="button" ref={addRuleBtnRef} className="btn btn-primary" onClick={() => setDrawerOpen(true)}>
+              + Add rule
+            </button>
           </div>
+          {RULE_GRID_HEAD}
           {rules.length === 0 && (
             <p className="muted small">
-              No rules yet. Add one below, or confirm matches during a CSV import to learn them
+              No rules yet. Use “Add rule” above, or confirm matches during a CSV import to learn them
               automatically.
             </p>
           )}
-          {rules.map((r, i) => (
-            <RuleRow
-              key={r.id} rule={r} categories={categories} currency={user.currency}
-              onChanged={load} onMove={move} isFirst={i === 0} isLast={i === rules.length - 1}
-            />
+          <RuleGroupRows list={selectedRules} categories={categories} defaultId={defaultId} currency={user.currency} onChanged={load} onMove={move} />
+          {showGroups && selectedRules.length === 0 && (
+            <p className="muted small">No rules for this account yet.</p>
+          )}
+          {otherGroups.map((g) => (
+            <details key={g.id} className="rule-group">
+              <summary className="rule-group-summary">
+                {g.name} <span className="muted small">({g.list.length} rule{g.list.length === 1 ? '' : 's'})</span>
+              </summary>
+              {RULE_GRID_HEAD}
+              <RuleGroupRows list={g.list} categories={categories} defaultId={defaultId} currency={user.currency} onChanged={load} onMove={move} />
+            </details>
           ))}
-          <AddRule categories={categories} currency={user.currency} onAdded={load} />
         </div>
       </section>
+      {drawerOpen && (
+        <RuleCreateDrawer
+          categories={categoriesForSelected}
+          accountName={accountName(selectedId)}
+          onClose={closeCreateDrawer}
+          onCreated={onRuleCreated}
+        />
+      )}
     </div>
   );
 }

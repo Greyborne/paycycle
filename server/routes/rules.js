@@ -11,7 +11,7 @@ const FIELDS = [
   'amount_min_cents', 'amount_max_cents', 'amount_equals_cents', 'amount_contains', 'notes',
 ];
 
-function publicRule(r) {
+function publicRule(r, owningAccountId) {
   return {
     id: r.id,
     categoryTemplateId: r.category_template_id,
@@ -25,7 +25,18 @@ function publicRule(r) {
     amountEqualsCents: r.amount_equals_cents,
     amountContains: r.amount_contains,
     notes: r.notes,
+    owningAccountId,
   };
+}
+
+// A rule's effective/owning account is its category's owning account:
+// (category.account_id ?? defaultAccountId). See templateOwnsAccount and the
+// 2026-07-26 CONSTITUTION.md §8 amendment.
+async function categoryAccountMap(budgetId) {
+  const { rows } = await q(
+    'SELECT id, account_id FROM category_templates WHERE budget_id = $1', [budgetId]
+  );
+  return new Map(rows.map((c) => [c.id, c.account_id]));
 }
 
 // Body → column values; text fields trim to NULL, amount fields are cents.
@@ -53,16 +64,24 @@ const hasCriterion = (f) => FIELDS.some((k) => k !== 'notes' && f[k] !== null &&
 
 async function requireCategory(budgetId, id) {
   const { rows } = await q(
-    'SELECT id FROM category_templates WHERE id = $1 AND budget_id = $2', [id, budgetId]
+    'SELECT id, account_id FROM category_templates WHERE id = $1 AND budget_id = $2', [id, budgetId]
   );
   if (!rows.length) bad('Unknown category');
-  return rows[0].id;
+  return rows[0];
 }
 
 router.get('/', async (req, res, next) => {
   try {
-    const rules = await loadRules(req.budget.id);
-    res.json({ rules: rules.map(publicRule) });
+    const [rules, catAccountById, defaultAccountId] = await Promise.all([
+      loadRules(req.budget.id),
+      categoryAccountMap(req.budget.id),
+      getDefaultAccountId(req.budget.id),
+    ]);
+    res.json({
+      rules: rules.map((r) => publicRule(
+        r, catAccountById.get(r.category_template_id) ?? defaultAccountId
+      )),
+    });
   } catch (err) {
     next(err);
   }
@@ -71,7 +90,7 @@ router.get('/', async (req, res, next) => {
 router.post('/', async (req, res, next) => {
   try {
     const body = req.body || {};
-    const categoryId = await requireCategory(req.budget.id, Number(body.categoryTemplateId));
+    const category = await requireCategory(req.budget.id, Number(body.categoryTemplateId));
     const f = parseFields(body);
     if (!hasCriterion(f)) bad('A rule needs at least one match condition');
     const { rows: max } = await q(
@@ -83,11 +102,12 @@ router.post('/', async (req, res, next) => {
          account_contains, institution_contains, account_number_contains, amount_min_cents,
          amount_max_cents, amount_equals_cents, amount_contains, notes)
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) RETURNING *`,
-      [req.budget.id, categoryId, max[0].next, f.description_contains, f.account_contains,
+      [req.budget.id, category.id, max[0].next, f.description_contains, f.account_contains,
        f.institution_contains, f.account_number_contains, f.amount_min_cents, f.amount_max_cents,
        f.amount_equals_cents, f.amount_contains, f.notes]
     );
-    res.status(201).json({ rule: publicRule(rows[0]) });
+    const owningAccountId = category.account_id ?? await getDefaultAccountId(req.budget.id);
+    res.status(201).json({ rule: publicRule(rows[0], owningAccountId) });
   } catch (err) {
     next(err);
   }
@@ -102,9 +122,19 @@ router.patch('/:id', async (req, res, next) => {
     );
     if (!existing.length) return res.status(404).json({ error: 'Rule not found' });
     const body = req.body || {};
-    const categoryId = body.categoryTemplateId !== undefined
-      ? await requireCategory(req.budget.id, Number(body.categoryTemplateId))
-      : existing[0].category_template_id;
+    let categoryId = existing[0].category_template_id;
+    let categoryAccountId;
+    if (body.categoryTemplateId !== undefined) {
+      const category = await requireCategory(req.budget.id, Number(body.categoryTemplateId));
+      categoryId = category.id;
+      categoryAccountId = category.account_id;
+    } else {
+      const { rows: catRows } = await q(
+        'SELECT account_id FROM category_templates WHERE id = $1 AND budget_id = $2',
+        [categoryId, req.budget.id]
+      );
+      categoryAccountId = catRows[0]?.account_id ?? null;
+    }
     const f = parseFields(body, existing[0]);
     if (!hasCriterion(f)) bad('A rule needs at least one match condition');
     const { rows } = await q(
@@ -117,7 +147,8 @@ router.patch('/:id', async (req, res, next) => {
        f.account_number_contains, f.amount_min_cents, f.amount_max_cents, f.amount_equals_cents,
        f.amount_contains, f.notes, existing[0].id]
     );
-    res.json({ rule: publicRule(rows[0]) });
+    const owningAccountId = categoryAccountId ?? await getDefaultAccountId(req.budget.id);
+    res.json({ rule: publicRule(rows[0], owningAccountId) });
   } catch (err) {
     next(err);
   }

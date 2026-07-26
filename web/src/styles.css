@@ -844,6 +844,7 @@ input.category-name:hover, input.category-name:focus { border-color: var(--borde
 .bulk-bar select { margin-top: 0; width: auto; }
 
 .badge-tag { background: var(--health-ok-bg); color: var(--health-ok-ink); }
+.badge-dead { background: var(--health-danger-bg); color: var(--health-danger-ink); }
 
 .rules-scroll { overflow-x: auto; }
 .rule-grid {
@@ -864,9 +865,19 @@ input.category-name:hover, input.category-name:focus { border-color: var(--borde
   border-bottom: 1px solid var(--grid);
 }
 .rule-row { border-bottom: 1px solid var(--grid); padding: 0.4rem 0; }
-.rule-add { border-bottom: none; padding-top: 0.6rem; }
 .rule-preview { margin: 0.3rem 0 0 calc(30px + 0.35rem); }
 .rule-preview ul { margin: 0.25rem 0 0; padding-left: 1.1rem; }
+.rule-meta-badge { margin: 0.3rem 0 0 calc(30px + 0.35rem); }
+.rule-dead-badge { display: inline-block; white-space: normal; margin: 0.3rem 0 0 calc(30px + 0.35rem); }
+
+.rule-group { margin-top: 0.85rem; border-top: 1px solid var(--border); padding-top: 0.6rem; }
+.rule-group-summary {
+  cursor: pointer;
+  font-weight: 600;
+  list-style: revert;
+}
+.rule-group-summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.rule-group[open] > .rule-group-summary { margin-bottom: 0.5rem; }
 
 .drift-notices { display: flex; flex-direction: column; gap: 0.4rem; }
 .drift-notice {
