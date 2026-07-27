@@ -264,7 +264,13 @@ async function recomputeClearedAmount(dbc, periodId, categoryTemplateId) {
 export async function recomputeLineItemActual(dbc, periodId, categoryTemplateId) {
   const clearedAmount = await recomputeClearedAmount(dbc, periodId, categoryTemplateId);
   await dbc.query(
-    'UPDATE line_items SET cleared_amount_cents = $1 WHERE pay_period_id = $2 AND category_template_id = $3',
+    `UPDATE line_items
+     SET cleared_amount_cents = $1::integer,
+         cleared = CASE WHEN cleared_amount_cents IS NOT NULL AND $1::integer IS NULL AND cleared
+                        THEN FALSE ELSE cleared END,
+         cleared_date = CASE WHEN cleared_amount_cents IS NOT NULL AND $1::integer IS NULL AND cleared
+                        THEN NULL ELSE cleared_date END
+     WHERE pay_period_id = $2 AND category_template_id = $3`,
     [clearedAmount, periodId, categoryTemplateId]
   );
   return clearedAmount;
@@ -284,7 +290,11 @@ export async function recomputeLineItemActual(dbc, periodId, categoryTemplateId)
 export async function recalculateOpenPeriodActuals(client, budgetId) {
   const { rows } = await client.query(
     `UPDATE line_items li
-     SET cleared_amount_cents = sums.total
+     SET cleared_amount_cents = sums.total,
+         cleared = CASE WHEN li.cleared_amount_cents IS NOT NULL AND sums.total IS NULL AND li.cleared
+                        THEN FALSE ELSE li.cleared END,
+         cleared_date = CASE WHEN li.cleared_amount_cents IS NOT NULL AND sums.total IS NULL AND li.cleared
+                        THEN NULL ELSE li.cleared_date END
      FROM (
        SELECT li2.id,
               CASE WHEN COUNT(t.id) > 0 THEN COALESCE(SUM(t.amount_cents), 0) ELSE NULL END AS total

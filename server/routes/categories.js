@@ -182,7 +182,17 @@ router.patch('/:id', async (req, res, next) => {
     // uncleared line items in open periods disappear (cleared history stays,
     // closed periods are never touched). Tag -> recurring starts planning at
     // $0 until an amount is recorded.
-    if (categoryType === 'tag' && t.category_type === 'recurring') {
+    //
+    // Reassigning a category to a different account has the same
+    // consequence: any already-materialized, uncleared open-period line
+    // item was seeded under the OLD account and would otherwise linger
+    // there forever, double-counting alongside the fresh item
+    // ensureMaterialized seeds for the category under its NEW account on
+    // the next request. If both conditions are true in the same request,
+    // run the delete only once.
+    const convertedToTag = categoryType === 'tag' && t.category_type === 'recurring';
+    const accountChanged = body.accountId !== undefined && accountId !== t.account_id;
+    if (convertedToTag || accountChanged) {
       await q(
         `DELETE FROM line_items li USING pay_periods pp
          WHERE pp.id = li.pay_period_id AND li.category_template_id = $1

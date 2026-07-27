@@ -1,6 +1,13 @@
 # Build spec — fix stale line-item actuals + Recalculate button
 
-Status: in progress (2026-07-25, from `main` @ 8954c9d). Prod data fix.
+Status: **shipped** (built after 2026-07-25, from `main` @ 8954c9d; confirmed
+live 2026-07-26). Delete/uncheck recompute in
+`server/routes/transactions.js` and `server/routes/periods.js`; the
+`POST /periods/recalculate` endpoint (`server/routes/periods.js:501`,
+`recalculateOpenPeriodActuals`) and the Settings "Recalculate actuals"
+button (`web/src/pages/Settings.jsx:431`) are both in place. No remaining
+work from this plan — see `docs/plans/data-reset.md` for the next phase
+(tiered destructive resets).
 
 ## Root cause (confirmed)
 

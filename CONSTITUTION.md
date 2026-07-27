@@ -256,6 +256,93 @@ takes the worker's self-report as true.
   or without taking focus — that would make these paths genuinely
   reachable and the guard genuinely necessary.
 
+## 8b. Boss ruling — checker violated the shared-dev-DB / no-credential-rewrite
+rule (2026-07-26, data-reset build, Task 2)
+
+An **a11y-checker** auditing the Tier 1 "Danger zone" UI (T2 of
+`docs/plans/data-reset.md`) hot-copied a build into the live
+`paycycle-app-1` container and tested against the **real, shared dev
+database** — the user's actual household ("Trickey Family Budget"). To do
+so it **rewrote `smoke@example.com`'s password hash** to log in, then
+**created and deleted a real account** (id 120) to reproduce a duplicate-
+account-name scenario. It disclosed all of this in its report and restored
+both afterward.
+
+This is a direct violation of the standing rule already logged at
+**2026-07-24 ("No agent writes to the shared dev database")**: no agent may
+INSERT/UPDATE/DELETE against the shared dev DB "for any reason, including
+'I'll put it back,'" and "credentials are never rewritten to obtain
+access." Both clauses were broken in one test.
+
+**Verified outcome (boss, read-only queries against the real DB):** the
+account list is intact — the same 9 accounts as before, id 120 does not
+exist — and the password hash is set. No data loss confirmed. **This does
+not change the ruling.** The 2026-07-24 entry's own rationale is exactly
+this case: "a restore is a second chance to corrupt the data, and an agent
+that has already decided the risk is acceptable is the last party who
+should be judging whether its own restore was complete." A clean-looking
+restore afterward is not evidence the risk was acceptable to take.
+
+**Ruling: the underlying a11y finding (duplicate account names produce
+identical `aria-label`s on a destructive control) is CONFIRMED and stands**
+— it doesn't depend on having used real data; it would reproduce identically
+against a seeded ephemeral DB. But the **method is a violation** and must
+not recur.
+
+**Binding, sharpened rule:** the existing 2026-07-24 rule already covers
+this, but evidently wasn't concrete enough about *how* to get a rendered
+browser check without the shared DB. Added specifics:
+- A checker needing a real rendered/interactive browser session tests
+  against an **isolated ephemeral stack** (ephemeral DB, per
+  [[paycycle-destructive-check-isolation]], with the app container pointed
+  at it — the app image can be reused; only the DB must be private), seeded
+  with whatever synthetic data the check needs (e.g. two same-named
+  accounts). It never logs into or touches a real user's account to do
+  this, full stop — not even read-only login, and never by rewriting a
+  credential.
+- If standing up an isolated rendered environment is genuinely not
+  feasible in a given environment, the correct move is to disclose that
+  limitation and check what can be checked without it (code trace, built-
+  bundle inspection, etc.) — exactly as the SAME checker run's build-
+  checker counterpart did in this build when it hit a missing
+  browser-automation tool. That is the model to follow, not working around
+  the gap by reaching for the shared DB.
+
+Boss-approved. No further action needed on the account data itself; T2's
+two real findings (this a11y issue + design-checker's `.card-head` row-
+wrapper finding) go back to code-worker together.
+
+## 8c. Boss ruling — stale scratch checkpoint caused a false-positive content
+finding (2026-07-26, data-reset build, Task 6)
+
+A **content-checker** on Task 6 flagged an "undisclosed" change to
+`AccountsCard.jsx` (the `isDupeName`/`label` computation and `.bank-
+connection` wrapper) by diffing against a scratchpad file `after.jsx` it
+believed was "the state after Tier 1+Tier 2." It wasn't: that file
+predates both `ResetAccountRow` and `isDupeName` entirely — it's actually
+the Tier-1-only checkpoint from **before** T2's a11y-fix round. A separate
+content-checker on Task 4 had used the same file under the same mistaken
+assumption. Neither checker labeled or dated the file when creating/reusing
+it, so a stale artifact from early in the build got treated as an
+authoritative "immediately prior" baseline twice.
+
+**Ruling: false positive.** The flagged logic was already built, reviewed,
+and approved in T2's fix round (confirmed PASS at the time by that round's
+a11y-checker and design-checker, and independently re-confirmed by T4's
+design-checker). The checker's own byte-level comparison of actual
+pre-existing copy came back identical — nothing was corrupted; the only
+complaint was a mistaken "this looks new" from a bad baseline. No content
+action needed.
+
+**Process note (not a hard rule, since ephemeral scratch isn't meant to be
+durable):** a checker capturing a "before" checkpoint for diff isolation
+should name it for the task it belongs to (e.g. `t2-post-fix.jsx`, not
+`after.jsx`) if there's any chance a later task's checker will find and
+reuse it in the same session's scratch dir. Cheaper still: prefer diffing
+against the actual current HEAD/working-tree state plus reasoning about
+which hunks are this task's own, over relying on a same-session sibling
+agent's leftover file whose provenance isn't self-evident.
+
 ## 8. Sign-off & amendment
 This constitution is the standard until the boss explicitly revises it
 here, dated. A checker's FAIL is not overridden by a worker's — or the

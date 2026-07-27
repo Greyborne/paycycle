@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { pool, q } from '../db.js';
 import { bad, parseCadenceConfig, requireCents, requireCurrency, requireDate, requireId } from '../validation.js';
-import { accountBalances, getConfig, getDefaultAccountId } from '../services/budget.js';
+import { accountBalances, getConfig, getDefaultAccountId, recomputeLineItemActual } from '../services/budget.js';
 import { periodContaining, todayISO } from '../services/schedule.js';
 
 const router = Router();
@@ -219,6 +219,198 @@ router.patch('/:id', async (req, res, next) => {
     await client.query('COMMIT');
     const rows = await accountBalances(req.budget.id);
     res.json({ accounts: rows.map(publicAccount) });
+  } catch (err) {
+    await client.query('ROLLBACK').catch(() => {});
+    next(err);
+  } finally {
+    client.release();
+  }
+});
+
+// Tier 1 data-reset: wipe every transaction for this account, but only the
+// ones sitting in an OPEN pay period — closed periods are the frozen
+// audited record (§5/§6) and must never be touched by this route, so the
+// delete is scoped through pay_periods.closed_at IS NULL, not just
+// account_id. Afterward, every recurring line item that lost a transaction
+// must have its cleared_amount_cents recomputed (same single-item pattern
+// as transactions.js's DELETE /:id, just looped over every distinct
+// (pay_period_id, category_template_id) pair touched by this wipe).
+router.delete('/:id/transactions', async (req, res, next) => {
+  const client = await pool.connect();
+  try {
+    const id = requireId(req.params.id, 'account');
+    const { rows: existing } = await q(
+      'SELECT id FROM accounts WHERE id = $1 AND budget_id = $2', [id, req.budget.id]
+    );
+    if (!existing.length) return res.status(404).json({ error: 'Account not found' });
+
+    await client.query('BEGIN');
+    // Every distinct line item this wipe will orphan, so it can be
+    // recomputed after the delete. Only recurring-category transactions
+    // have a matching line item; tag/misc transactions need no recompute.
+    const { rows: affected } = await client.query(
+      `SELECT DISTINCT t.pay_period_id, t.category_template_id
+       FROM transactions t
+       JOIN pay_periods pp ON pp.id = t.pay_period_id
+       WHERE t.account_id = $1 AND pp.closed_at IS NULL AND t.category_template_id IS NOT NULL`,
+      [id]
+    );
+    const { rowCount: deleted } = await client.query(
+      `DELETE FROM transactions
+       WHERE account_id = $1
+         AND pay_period_id IN (
+           SELECT id FROM pay_periods WHERE account_id = $1 AND closed_at IS NULL
+         )`,
+      [id]
+    );
+    for (const row of affected) {
+      await recomputeLineItemActual(client, row.pay_period_id, row.category_template_id);
+    }
+    await client.query('COMMIT');
+    res.json({ deleted });
+  } catch (err) {
+    await client.query('ROLLBACK').catch(() => {});
+    next(err);
+  } finally {
+    client.release();
+  }
+});
+
+// Tier 2 data-reset: "fresh start, keep structure." Wipes this account's
+// OPEN pay_periods (transactions cascade-delete with them via
+// transactions.pay_period_id ON DELETE CASCADE, and so do their line_items
+// via line_items.pay_period_id ON DELETE CASCADE - see migrations/001_init.sql),
+// then re-dates accounts.started_on. Closed periods - their transactions,
+// line_items, and closed_snapshot - are NEVER deleted or altered here, full
+// stop; that is the one invariant this route may never trade away, no
+// matter what the request body says. Categories/category_rules/
+// category_amount_history are untouched by design (kept on purpose).
+router.post('/:id/reset', async (req, res, next) => {
+  const client = await pool.connect();
+  try {
+    const id = requireId(req.params.id, 'account');
+    const { rows: existing } = await q(
+      'SELECT id FROM accounts WHERE id = $1 AND budget_id = $2', [id, req.budget.id]
+    );
+    if (!existing.length) return res.status(404).json({ error: 'Account not found' });
+
+    const body = req.body || {};
+    const closedPeriods = body.closedPeriods === 'confirm' ? 'confirm' : 'block';
+    const startedOn = await resolveStartedOn(req.budget, body.startedOn);
+
+    // Find the earliest closed period for this account, if any. Closed
+    // periods are never touched by this route regardless of `closedPeriods`
+    // - that flag only controls whether a nonsensical request (re-dating the
+    // tracking start to at/before an already-closed period) is allowed to
+    // proceed anyway, not whether closed data can be touched.
+    const { rows: earliestClosed } = await q(
+      `SELECT start_date FROM pay_periods
+       WHERE account_id = $1 AND closed_at IS NOT NULL
+       ORDER BY start_date ASC LIMIT 1`,
+      [id]
+    );
+    if (earliestClosed.length && startedOn <= earliestClosed[0].start_date) {
+      if (closedPeriods !== 'confirm') {
+        bad(`This account has a closed period starting ${earliestClosed[0].start_date}; ` +
+          `startedOn must be after that date. Pass closedPeriods: 'confirm' to acknowledge and proceed ` +
+          `(the closed period itself is never touched).`);
+      }
+      // Acknowledged: proceed, but the closed period(s) are still left
+      // completely alone below - only the open tail is ever wiped.
+    }
+
+    await client.query('BEGIN');
+    const { rowCount: deletedTransactions } = await client.query(
+      `DELETE FROM transactions
+       WHERE account_id = $1
+         AND pay_period_id IN (
+           SELECT id FROM pay_periods WHERE account_id = $1 AND closed_at IS NULL
+         )`,
+      [id]
+    );
+    // Deleting the open pay_periods rows cascades to their line_items
+    // (and to any remaining transactions on them) automatically.
+    const { rowCount: deletedPeriods } = await client.query(
+      `DELETE FROM pay_periods WHERE account_id = $1 AND closed_at IS NULL`,
+      [id]
+    );
+    await client.query('UPDATE accounts SET started_on = $1 WHERE id = $2', [startedOn, id]);
+    await client.query('COMMIT');
+    res.json({ deletedTransactions, deletedPeriods, startedOn });
+  } catch (err) {
+    await client.query('ROLLBACK').catch(() => {});
+    next(err);
+  } finally {
+    client.release();
+  }
+});
+
+// Tier 3 data-reset: hard-delete the account itself (for closing a real
+// bank account). Unlike Tiers 1/2, this DELIBERATELY takes this account's
+// CLOSED periods down with it too - the account is going away entirely, so
+// its frozen snapshots have nowhere left to live. This is the one place in
+// the app where a closed period is not immutable; see docs/plans/data-reset.md
+// Tier 3 and CONSTITUTION.md's note on this build. There is no down path:
+// recovering from an unwanted delete is a full database restore, not an
+// in-app undo.
+//
+// Cascade graph relied on below (verified against migrations/*.sql, not
+// assumed):
+//   - pay_period_configs.account_id -> accounts ON DELETE CASCADE (013)
+//   - pay_periods.account_id        -> accounts ON DELETE CASCADE (013)
+//   - line_items.pay_period_id      -> pay_periods ON DELETE CASCADE (001)
+//     (line_items.account_id is ON DELETE SET NULL, but moot here - the
+//     parent pay_periods row is gone first via the above)
+//   - transactions.pay_period_id    -> pay_periods ON DELETE CASCADE (001)
+//     (transactions.account_id is ON DELETE SET NULL, likewise moot)
+//   - category_templates.account_id -> accounts ON DELETE SET NULL (004)
+//   - simplefin_account_links.account_id -> accounts ON DELETE SET NULL (014)
+// So a single `DELETE FROM accounts` removes every pay_period_config/
+// pay_period/line_item/transaction that belonged to this account (closed
+// periods included), unassigns any category_templates it owned (they fall
+// back to the household's default account automatically via the existing
+// `template.account_id ?? getDefaultAccountId()` read-time pattern used
+// throughout server/services/budget.js - no new fallback code needed), and
+// silently un-syncs any linked SimpleFIN account. category_rules are never
+// touched directly - they're budget-owned and only reference a category,
+// which itself just fell back to the default account.
+router.delete('/:id', async (req, res, next) => {
+  const client = await pool.connect();
+  try {
+    const id = requireId(req.params.id, 'account');
+    const { rows: existing } = await q(
+      'SELECT id FROM accounts WHERE id = $1 AND budget_id = $2', [id, req.budget.id]
+    );
+    if (!existing.length) return res.status(404).json({ error: 'Account not found' });
+
+    await client.query('BEGIN');
+    // Lock this row first, before re-checking is-default/is-only-account,
+    // so a concurrent PATCH that flips another account's is_default (or
+    // archives the last sibling account) can't race this delete and leave
+    // the budget with zero accounts or no default. Mirrors the FOR UPDATE
+    // fix in server/routes/auth.js's DELETE /account.
+    await client.query('SELECT id FROM accounts WHERE id = $1 FOR UPDATE', [id]);
+
+    const { rows: current } = await client.query(
+      'SELECT is_default, archived FROM accounts WHERE id = $1 AND budget_id = $2',
+      [id, req.budget.id]
+    );
+    if (!current.length) return res.status(404).json({ error: 'Account not found' });
+    const a = current[0];
+
+    const { rows: countRows } = await client.query(
+      'SELECT count(*)::int AS n FROM accounts WHERE budget_id = $1', [req.budget.id]
+    );
+    if (countRows[0].n === 1) bad('A household must have at least one account');
+
+    // Same guard as the PATCH /:id archive path (line ~188): a live default
+    // account can't be removed out from under the household. Require the
+    // caller to make another account default first.
+    if (a.is_default && !a.archived) bad('Make another account the default before deleting this one');
+
+    await client.query('DELETE FROM accounts WHERE id = $1', [id]);
+    await client.query('COMMIT');
+    res.status(204).end();
   } catch (err) {
     await client.query('ROLLBACK').catch(() => {});
     next(err);
