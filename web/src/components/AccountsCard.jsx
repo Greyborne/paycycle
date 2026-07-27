@@ -7,6 +7,127 @@ import { useAccounts } from '../useAccounts.js';
 const TYPES = ['checking', 'savings', 'credit', 'cash', 'other'];
 const CADENCES = ['weekly', 'biweekly', 'semimonthly', 'monthly', 'custom'];
 
+// Type-to-confirm gate (Tier 2/3 of docs/plans/data-reset.md — "Confirmation
+// UI (all three tiers)"): the caller must type an exact expected string
+// before the guarded action is allowed to run. Built from existing
+// input/.btn tokens (§4), not a new visual component — just a new
+// interaction shape. Reuse this hook as-is for Tier 3 (delete account):
+// `const confirm = useTypeToConfirm(account.name)`, spread
+// `confirm.inputProps` onto a labeled text input, gate the destructive
+// button on `confirm.matched`, and call `confirm.reset()` after a
+// successful (or abandoned) action.
+function useTypeToConfirm(expected) {
+  const [value, setValue] = useState('');
+  return {
+    value,
+    matched: value.length > 0 && value === expected,
+    reset: () => setValue(''),
+    inputProps: {
+      type: 'text',
+      value,
+      autoComplete: 'off',
+      onChange: (e) => setValue(e.target.value),
+    },
+  };
+}
+
+// Tier 2 data reset: re-date an account's tracking-start and wipe its open
+// periods/transactions down to that new starting line (closed periods and
+// categories are never touched — server/routes/accounts.js). This is a
+// harder-to-undo action than deleting transactions alone (Tier 1): it also
+// deletes the open pay_periods/line_items themselves, not just the
+// transactions in them. Gated by the type-to-confirm control above.
+function ResetAccountRow({ account, label, resetting, blocked, onReset }) {
+  const [startedOn, setStartedOn] = useState('');
+  const confirm = useTypeToConfirm(account.name);
+  const canSubmit = Boolean(startedOn) && confirm.matched && !resetting;
+
+  return (
+    <div className="reset-account-row">
+      <div className="quick-add">
+        <label htmlFor={`reset-date-${account.id}`} className="muted small">
+          New tracking-start date
+        </label>
+        <input
+          id={`reset-date-${account.id}`}
+          type="date"
+          value={startedOn}
+          onChange={(e) => setStartedOn(e.target.value)}
+          aria-label={`New tracking-start date for ${label}`}
+        />
+        <label htmlFor={`reset-confirm-${account.id}`} className="sr-only">
+          Type {account.name} to confirm resetting {label}
+        </label>
+        <input
+          id={`reset-confirm-${account.id}`}
+          {...confirm.inputProps}
+          placeholder={`Type "${account.name}" to confirm`}
+          aria-label={`Type ${account.name} to confirm resetting ${label}`}
+        />
+        <button
+          type="button"
+          className="btn btn-ghost"
+          disabled={!canSubmit}
+          onClick={() => onReset(account, startedOn, confirm.reset)}
+          aria-label={resetting ? `Resetting ${label}…` : `Reset account for ${label}`}
+        >
+          {resetting ? 'Resetting…' : 'Reset account'}
+        </button>
+      </div>
+      {blocked && (
+        <div className="reset-block">
+          <p className="form-error" role="alert">{blocked.message}</p>
+          <button
+            type="button"
+            className="btn btn-ghost"
+            disabled={resetting}
+            onClick={() => onReset(account, blocked.startedOn, confirm.reset, { closedPeriods: 'confirm' })}
+          >
+            I understand, reset anyway
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Tier 3 data reset: hard-delete the account itself (server/routes/accounts.js
+// DELETE /:id — 204 on success). This is the most severe tier of the three:
+// unlike Tier 1/2, it also deletes this account's CLOSED periods and their
+// frozen closed_snapshot records (the one deliberate exception to "closed
+// periods are frozen" elsewhere in this app). Categories and rules the
+// account owned survive and fall back to the household's default account.
+// There is no down path from this action short of a full database restore —
+// no in-app undo, unlike Tier 1/2's "re-enter it" recovery. Gated by the same
+// type-to-confirm control as Tier 2.
+function DeleteAccountRow({ account, label, deleting, onDelete }) {
+  const confirm = useTypeToConfirm(account.name);
+  return (
+    <div className="reset-account-row">
+      <div className="quick-add">
+        <label htmlFor={`delete-confirm-${account.id}`} className="sr-only">
+          Type {account.name} to confirm deleting {label}
+        </label>
+        <input
+          id={`delete-confirm-${account.id}`}
+          {...confirm.inputProps}
+          placeholder={`Type "${account.name}" to confirm`}
+          aria-label={`Type ${account.name} to confirm deleting ${label}`}
+        />
+        <button
+          type="button"
+          className="btn btn-ghost"
+          disabled={!confirm.matched || deleting}
+          aria-label={`Delete account for ${label}`}
+          onClick={() => onDelete(account, confirm.reset)}
+        >
+          {deleting ? 'Deleting…' : 'Delete account'}
+        </button>
+      </div>
+    </div>
+  );
+}
+
 function AccountRow({ account, currency, onPatch }) {
   const [starting, setStarting] = useState(centsToInput(account.startingBalanceCents));
   const displayCurrency = account.currency || currency;
@@ -91,6 +212,18 @@ export default function AccountsCard() {
   const [cadence, setCadence] = useState('biweekly');
   const [intervalDays, setIntervalDays] = useState('14');
   const [error, setError] = useState(null);
+  const [deletingTxnsId, setDeletingTxnsId] = useState(null);
+  const [resetError, setResetError] = useState(null);
+  const [resetMessage, setResetMessage] = useState(null);
+  const [resettingId, setResettingId] = useState(null);
+  // Set when POST /accounts/:id/reset 400s because the chosen startedOn
+  // would predate/land on a closed period. Holds the account id and the
+  // startedOn already typed in, so the "reset anyway" retry (closedPeriods:
+  // 'confirm') doesn't make the user re-enter anything.
+  const [resetBlock, setResetBlock] = useState(null);
+  const [deleteError, setDeleteError] = useState(null);
+  const [deleteMessage, setDeleteMessage] = useState(null);
+  const [deletingAccountId, setDeletingAccountId] = useState(null);
 
   if (!accounts) return null;
 
@@ -135,10 +268,92 @@ export default function AccountsCard() {
     }
   };
 
+  // Tier 1 data reset: wipe every transaction sitting in this account's OPEN
+  // pay periods (closed periods are the frozen audited record and are never
+  // touched — see server/routes/accounts.js). There's no cheap endpoint to
+  // get an exact open-period transaction count without fetching the rows
+  // themselves (GET /transactions?account= returns full rows, capped at
+  // 1000), so the confirm names the account instead of a number — same
+  // "no exact number" fallback the task brief allows.
+  const deleteAllTransactions = async (account) => {
+    if (!window.confirm(
+      `Delete all transactions in ${account.name}'s open pay periods? This cannot be undone.`
+    )) return;
+    setResetError(null);
+    setResetMessage(null);
+    setDeletingTxnsId(account.id);
+    try {
+      const res = await api(`/accounts/${account.id}/transactions`, { method: 'DELETE' });
+      setResetMessage(`Deleted ${res.deleted} transaction(s) from ${account.name}.`);
+      reload();
+    } catch (err) {
+      setResetError(err.message);
+    } finally {
+      setDeletingTxnsId(null);
+    }
+  };
+
+  // Tier 2 data reset: "fresh start, keep structure." Wipes this account's
+  // open pay_periods (and everything in them — transactions, line_items)
+  // down to a new tracking-start date; closed periods and categories are
+  // never touched. On a 400 (startedOn at/before a closed period), the
+  // server names the earliest one; that's surfaced as-is rather than a
+  // generic error, with an explicit second step to retry with
+  // closedPeriods: 'confirm' if the user chooses to. Never silently retried.
+  const resetAccount = async (account, startedOnValue, clearConfirmText, opts = {}) => {
+    setResetError(null);
+    setResetMessage(null);
+    setResettingId(account.id);
+    try {
+      const body = { startedOn: startedOnValue };
+      if (opts.closedPeriods) body.closedPeriods = opts.closedPeriods;
+      const res = await api(`/accounts/${account.id}/reset`, { method: 'POST', body });
+      setResetMessage(
+        `Reset ${res.deletedPeriods} period(s), deleted ${res.deletedTransactions} transaction(s) ` +
+        `for ${account.name}. Tracking now starts ${res.startedOn}.`
+      );
+      setResetBlock(null);
+      clearConfirmText();
+      reload();
+    } catch (err) {
+      if (err.status === 400 && !opts.closedPeriods) {
+        setResetBlock({ accountId: account.id, startedOn: startedOnValue, message: err.message });
+      } else {
+        setResetError(err.message);
+        setResetBlock(null);
+      }
+    } finally {
+      setResettingId(null);
+    }
+  };
+
+  // Tier 3 data reset: hard-delete the account (server/routes/accounts.js
+  // DELETE /:id). The server's 400 refusals ("only account" / "live default")
+  // are actionable and surfaced verbatim, not paraphrased — same as the 404
+  // and Tier 1/2 error handling above. On success the account is gone from
+  // the API's own list, so the same `reload()` used everywhere else in this
+  // file removes it from the UI.
+  const deleteAccount = async (account, clearConfirmText) => {
+    setDeleteError(null);
+    setDeleteMessage(null);
+    setDeletingAccountId(account.id);
+    try {
+      await api(`/accounts/${account.id}`, { method: 'DELETE' });
+      setDeleteMessage(`Deleted ${account.name} and all of its data, including any closed periods.`);
+      clearConfirmText();
+      reload();
+    } catch (err) {
+      setDeleteError(err.message);
+    } finally {
+      setDeletingAccountId(null);
+    }
+  };
+
   const total = accounts.reduce((s, a) => s + a.balanceCents, 0);
 
   return (
-    <section className="card">
+    <>
+      <section className="card">
       <h2>Bank accounts</h2>
       <p className="muted small">
         Balances and projections are tracked per account — use the switcher in the top bar to change
@@ -204,6 +419,70 @@ export default function AccountsCard() {
         budget math — no exchange-rate guessing.
       </p>
       {error && <p className="form-error" role="alert">{error}</p>}
+      </section>
+
+      <section className="card">
+      <h2>Danger zone</h2>
+      <p className="muted small">
+        Delete every transaction sitting in one account's open pay periods. Pay periods, categories
+        and closed periods are untouched, and open-period actuals are recomputed afterward. This
+        cannot be undone.
+      </p>
+      <p className="muted small">
+        <strong>Reset account</strong> goes further: it deletes this account's open pay periods
+        themselves — not just the transactions in them — and re-dates tracking to a new start.
+        Categories, rules and closed periods are kept. This deletes real transaction and period
+        history and is harder to undo than deleting transactions alone; recovering means
+        re-importing or re-entering everything from the new start date forward.
+      </p>
+      <p className="muted small">
+        <strong>Delete account</strong> is the most severe action here: it permanently deletes the
+        account itself, including its closed, audited periods — this is the one
+        place in PayCycle where closed-period history is not kept forever. There is no undo and no
+        in-app recovery; getting any of it back would require a full database restore. Categories
+        and rules this account owned are kept and fall back to the household's default account. You
+        can't delete a household's only account, or its live default account — make another account
+        default first.
+      </p>
+      {accounts.map((a) => {
+        const isDupeName = accounts.filter((o) => o.name === a.name).length > 1;
+        const label = isDupeName
+          ? `${a.name} · ${a.type} · ${fmtMoney(a.balanceCents, a.currency || user.currency)}`
+          : a.name;
+        return (
+          <div className="bank-connection" key={a.id}>
+            <div className="card-head">
+              <h3>{label}</h3>
+              <button
+                type="button" className="btn btn-ghost"
+                disabled={deletingTxnsId === a.id}
+                aria-label={`Delete all transactions for ${label}`}
+                onClick={() => deleteAllTransactions(a)}
+              >
+                {deletingTxnsId === a.id ? 'Deleting…' : 'Delete all transactions'}
+              </button>
+            </div>
+            <ResetAccountRow
+              account={a}
+              label={label}
+              resetting={resettingId === a.id}
+              blocked={resetBlock && resetBlock.accountId === a.id ? resetBlock : null}
+              onReset={resetAccount}
+            />
+            <DeleteAccountRow
+              account={a}
+              label={label}
+              deleting={deletingAccountId === a.id}
+              onDelete={deleteAccount}
+            />
+          </div>
+        );
+      })}
+      {resetError && <p className="form-error" role="alert">{resetError}</p>}
+      {resetMessage && <p className="form-ok" role="status">{resetMessage}</p>}
+      {deleteError && <p className="form-error" role="alert">{deleteError}</p>}
+      {deleteMessage && <p className="form-ok" role="status">{deleteMessage}</p>}
     </section>
+    </>
   );
 }
