@@ -100,6 +100,73 @@ async function deleteTransactionLikeRoute(txnId) {
   }
 }
 
+// Mirrors exactly what transactions.js's POST /bulk-delete handler does
+// (BEGIN; delete each; dedupe (pay_period_id, category_template_id) pairs;
+// recompute each pair once; COMMIT) so this test exercises the real logic.
+async function bulkDeleteLikeRoute(txnIds) {
+  const { rows: txns } = await q(
+    'SELECT id, pay_period_id, category_template_id FROM transactions WHERE id = ANY($1)', [txnIds]
+  );
+  const client = await pool.connect();
+  let recomputeCalls = 0;
+  try {
+    await client.query('BEGIN');
+    const pairs = new Map();
+    for (const txn of txns) {
+      await client.query('DELETE FROM transactions WHERE id = $1', [txn.id]);
+      if (txn.category_template_id && txn.pay_period_id) {
+        pairs.set(`${txn.pay_period_id}:${txn.category_template_id}`, {
+          periodId: txn.pay_period_id,
+          categoryTemplateId: txn.category_template_id,
+        });
+      }
+    }
+    for (const { periodId, categoryTemplateId } of pairs.values()) {
+      await recomputeLineItemActual(client, periodId, categoryTemplateId);
+      recomputeCalls += 1;
+    }
+    await client.query('COMMIT');
+  } catch (err) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw err;
+  } finally {
+    client.release();
+  }
+  return { recomputeCalls };
+}
+
+test('bulk-delete: deleting two transactions that together cleared a line item clears cleared/cleared_date/cleared_amount_cents in one recompute', async (t) => {
+  const ctx = await seedBudget();
+  t.after(() => cleanup(ctx));
+
+  const id1 = await insertTxn(ctx, 10000);
+  await clearLineItemForTransaction({ query: q }, ctx.template, {
+    periodId: ctx.periodId, date: todayISO(), amountCents: 10000, accountId: ctx.accountId,
+  });
+  const id2 = await insertTxn(ctx, 5000);
+  await clearLineItemForTransaction({ query: q }, ctx.template, {
+    periodId: ctx.periodId, date: todayISO(), amountCents: 5000, accountId: ctx.accountId,
+  });
+
+  const before = await q(
+    'SELECT cleared, cleared_amount_cents FROM line_items WHERE pay_period_id = $1 AND category_template_id = $2',
+    [ctx.periodId, ctx.categoryId]
+  );
+  assert.equal(before.rows[0].cleared, true);
+  assert.equal(before.rows[0].cleared_amount_cents, 15000);
+
+  const { recomputeCalls } = await bulkDeleteLikeRoute([id1, id2]);
+  assert.equal(recomputeCalls, 1, 'both deleted transactions share the same (period, category) pair - must recompute exactly once, not twice');
+
+  const after = await q(
+    'SELECT cleared, cleared_date, cleared_amount_cents FROM line_items WHERE pay_period_id = $1 AND category_template_id = $2',
+    [ctx.periodId, ctx.categoryId]
+  );
+  assert.equal(after.rows[0].cleared_amount_cents, null, 'zero remaining transactions must leave the column NULL, never 0');
+  assert.equal(after.rows[0].cleared, false, 'cleared must auto-uncheck when both backing transactions are bulk-deleted');
+  assert.equal(after.rows[0].cleared_date, null, 'cleared_date must clear alongside cleared');
+});
+
 test('deleting a transaction that cleared a recurring line item drops cleared_amount_cents to the new sum', async (t) => {
   const ctx = await seedBudget();
   t.after(() => cleanup(ctx));
@@ -144,7 +211,12 @@ test('deleting the ONLY transaction that cleared a line item sets cleared_amount
     [ctx.periodId, ctx.categoryId]
   );
   assert.equal(after.rows[0].cleared_amount_cents, null, 'zero remaining transactions must leave the column NULL, never 0');
-  assert.equal(after.rows[0].cleared, true, 'the cleared bool is a separate manual/auto flag and must not be touched by delete');
+  // Per docs/plans/uncheck-cleared-on-orphan.md: when the last backing
+  // transaction is deleted, cleared_amount_cents transitions from a real
+  // value to NULL while cleared was TRUE - recomputeLineItemActual now
+  // auto-unchecks cleared in that transition so the checkbox never goes
+  // stale with nothing behind it.
+  assert.equal(after.rows[0].cleared, false, 'cleared must auto-uncheck when its last backing transaction is deleted (orphan fix)');
 });
 
 test('unchecking cleared on a line item whose transactions are gone sets cleared_amount_cents to null', async (t) => {
@@ -240,10 +312,16 @@ test('recalculate: an orphaned cleared_amount_cents in an OPEN period is correct
   }
 
   const orphanAfter = await q(
-    'SELECT cleared_amount_cents FROM line_items WHERE pay_period_id = $1 AND category_template_id = $2',
+    'SELECT cleared_amount_cents, cleared, cleared_date FROM line_items WHERE pay_period_id = $1 AND category_template_id = $2',
     [ctx.periodId, ctx.categoryId]
   );
   assert.equal(orphanAfter.rows[0].cleared_amount_cents, null, 'the orphan must be corrected to null (0 matching transactions)');
+  // Per docs/plans/uncheck-cleared-on-orphan.md: recalculateOpenPeriodActuals
+  // must apply the same auto-uncheck logic recomputeLineItemActual has - the
+  // repair button this test exercises must not recreate the stale-checked-box
+  // bug it exists to fix.
+  assert.equal(orphanAfter.rows[0].cleared, false, 'cleared must auto-uncheck when recalculate nulls out its last backing actual');
+  assert.equal(orphanAfter.rows[0].cleared_date, null, 'cleared_date must clear alongside cleared');
 
   const legitAfter = await q(
     'SELECT cleared_amount_cents FROM line_items WHERE pay_period_id = $1 AND category_template_id = $2',

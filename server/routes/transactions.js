@@ -255,20 +255,43 @@ router.patch('/assign', async (req, res, next) => {
   }
 });
 
-// Bulk delete (import mistakes). Closed periods stay untouched.
+// Bulk delete (import mistakes). Closed periods stay untouched. Every
+// recurring line item that loses a transaction here must have its
+// cleared_amount_cents (and, when it fully empties out, cleared/cleared_date)
+// recomputed - same pattern as the single-transaction DELETE /:id route above
+// and accounts.js's Tier 1 wipe, just deduped over every distinct
+// (pay_period_id, category_template_id) pair touched by this batch so a
+// period+category cleared by two of the deleted transactions is only
+// recomputed once.
 router.post('/bulk-delete', async (req, res, next) => {
+  const client = await pool.connect();
   try {
     const txns = await loadOwnTxns(req.budget.id, req.body?.ids);
     let deleted = 0;
     let skippedClosed = 0;
+    const pairs = new Map();
+    await client.query('BEGIN');
     for (const txn of txns) {
       if (txn.period_closed) { skippedClosed += 1; continue; }
-      await q('DELETE FROM transactions WHERE id = $1', [txn.id]);
+      await client.query('DELETE FROM transactions WHERE id = $1', [txn.id]);
       deleted += 1;
+      if (txn.category_template_id && txn.pay_period_id) {
+        pairs.set(`${txn.pay_period_id}:${txn.category_template_id}`, {
+          periodId: txn.pay_period_id,
+          categoryTemplateId: txn.category_template_id,
+        });
+      }
     }
+    for (const { periodId, categoryTemplateId } of pairs.values()) {
+      await recomputeLineItemActual(client, periodId, categoryTemplateId);
+    }
+    await client.query('COMMIT');
     res.json({ deleted, skippedClosed });
   } catch (err) {
+    await client.query('ROLLBACK').catch(() => {});
     next(err);
+  } finally {
+    client.release();
   }
 });
 
