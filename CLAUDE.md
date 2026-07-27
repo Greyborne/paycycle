@@ -50,8 +50,13 @@ itself.
 ## Cost tiering (why this saves money)
 
 Route by task difficulty, not convenience:
-- **Boss (you):** the expensive model. Spec-writing, judging disputes,
-  final constitution sign-off only.
+- **Boss (you): defaults to Sonnet.** Spec-writing, task breakdown,
+  delegation, and routine review run on Sonnet. Switch yourself to Opus
+  only for a genuine dispute ruling (Job 6), a constitution amendment
+  decision, or another judgment call with real ambiguity — then switch
+  back to Sonnet once it's resolved. Do not stay on Opus for the
+  ordinary spec/delegate/review loop; that is the single biggest driver
+  of hitting the 5-hour usage limit.
 - **Workers:** cheap/fast models. All actual coding and copywriting.
 - **Checkers:** a mid-tier model is usually enough — the job is
   mechanical re-verification (re-fetch, re-compare, re-run), not
