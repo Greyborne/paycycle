@@ -972,6 +972,21 @@ input.category-name:hover, input.category-name:focus { border-color: var(--borde
   .content-header { padding: 0.75rem 1rem; }
   .content { padding: 1rem; }
   .user-chip-header { display: none; }
+
+  /* Narrow phones (375-412px): the title, account switcher, theme toggle
+     and bell must all stay visible with no page overflow (see §5). The
+     switcher's own intrinsic width (sized to its widest option) is the
+     main offender - cap it and let long account names truncate instead of
+     forcing the row wider than the viewport. */
+  .page-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .header-actions { min-width: 0; flex-shrink: 0; }
+  .account-switcher {
+    min-width: 0;
+    max-width: 6rem;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
 }
 
 @media (max-width: 640px) {
