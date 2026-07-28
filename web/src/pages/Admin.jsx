@@ -81,9 +81,9 @@ export default function Admin() {
   if (!users) return <div className="page-loading">Loading…</div>;
 
   return (
-    <div className="admin-page">
-      <section className="card">
-        <h2>Users</h2>
+    <section className="card grid-full">
+      <h2>Users</h2>
+      <div className="table-scroll">
         <table className="table">
           <thead>
             <tr>
@@ -165,9 +165,9 @@ export default function Admin() {
             ))}
           </tbody>
         </table>
-        {message && <p className="form-ok" role="status">{message}</p>}
-        {actionError && <p className="form-error" role="alert">{actionError}</p>}
-      </section>
-    </div>
+      </div>
+      {message && <p className="form-ok" role="status">{message}</p>}
+      {actionError && <p className="form-error" role="alert">{actionError}</p>}
+    </section>
   );
 }

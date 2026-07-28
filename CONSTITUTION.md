@@ -349,6 +349,79 @@ here, dated. A checker's FAIL is not overridden by a worker's — or the
 boss's — say-so: disputes are resolved by re-reading this file and ruling
 explicitly, in writing, before continuing.
 
+- **2026-07-27 — Settings page becomes tabbed; Admin folds in from the
+  sidebar.** Standing rules added ahead of the Settings-redesign build.
+  Design proposal reviewed and approved by the user (artifact:
+  `settings-redesign-proposal`); decisions locked:
+  - **Five tabs, this grouping, no others without a new design task:**
+    **General** (Money/currency, Appearance/theme, Balance health colors,
+    Notifications), **Accounts** (Pay schedule, Bank accounts),
+    **Household & Security** (Household, Password), **Maintenance**
+    (Recalculate actuals, Danger zone), **Admin** (Users table).
+  - **Danger zone stays merged into Maintenance**, not a standalone tab —
+    visually fenced with a red-tinted border/background (reuse
+    `--critical`/`--critical-bg` semantics per §4's semantic-status set,
+    do not invent a new red), not hidden behind an extra click.
+  - **Admin becomes the 5th tab, hidden entirely (not disabled) for
+    non-admins** — same client-side `user.isAdmin` UX shortcut as today,
+    same server-side re-derivation/enforcement in
+    `server/routes/admin.js`. The `/admin` route is removed from the
+    sidebar nav splice in `App.jsx`; a direct hit on `/admin` redirects to
+    `/settings` rather than 404ing or dead-ending a bookmark.
+  - **No deep-linking.** Tabs are client-side component state; the URL
+    stays `/settings` regardless of active tab. General is always the
+    default tab on page load/navigation.
+  - **Container width:** drop the `.settings-page .card { max-width:
+    720px }` outlier. Adopt the same `max-width: 1600px` treatment already
+    used by Categories/Rules (`styles.css:824`) — not Dashboard's stepped
+    1440/1920 breakpoints (unnecessary complexity for this page) and not
+    the fully unbounded Periods/Transactions treatment (this page has no
+    wide tabular content that needs it).
+  - **Card layout inside a tab panel:** CSS grid,
+    `grid-template-columns: repeat(auto-fit, minmax(420px, 1fr))`,
+    `gap: 1.1rem` (the existing standard card gutter, §4) — compact cards
+    (Money, Appearance, Balance health colors, Notifications, Password)
+    pair up on wide viewports; tables and multi-step editors (Bank
+    accounts, Pay schedule, Danger zone, Users) are marked full-width
+    (`grid-column: 1 / -1`) so they never get squeezed into a half column.
+  - **New Tabs primitive required** — no tab/tabpanel pattern exists
+    anywhere in the app today. Real `role="tablist"` / `role="tab"` /
+    `role="tabpanel"` semantics, arrow-key + Home/End keyboard navigation,
+    a visible focus state, and `aria-selected`/`aria-controls` wiring —
+    this is new interactive markup and gets a full a11y-checker pass, not
+    just a design-checker glance. Tokens only (§4); no new color/radius
+    invented for the tab strip.
+  - **`AccountsCard.jsx` splits into two components** (Bank accounts,
+    Danger zone) sharing the existing `useAccounts()` hook, so each can
+    render inside its own tab panel (Accounts / Maintenance) without
+    duplicating account state or API calls.
+  - Every task here touching `Settings.jsx`, `AccountsCard.jsx`, or
+    `Admin.jsx` gets a **content-checker verbatim-vs-HEAD sweep** in
+    addition to its type-matched checkers, per the 2026-07-26 rule below
+    (protected copy moves/reflows even in a "layout only" task). The
+    Admin-fold task additionally gets **security-checker**, since it
+    changes routing/gating surface (§3). Boss-approved.
+
+- **2026-07-27 — Bank accounts table header: plain bottom-border, no
+  shaded band.** A named, one-table exception to §4's standard `.table`
+  header pattern (uppercase muted header on `--surface-2`, rounded end
+  corners). Scoped via a `.table-plain-head` modifier class applied only
+  to `BankAccountsCard`'s table (`AccountsCard.jsx:275`;
+  `styles.css:494-501`) — every other `.table` in the app (Transactions,
+  Reports, Admin users, Household members, Rules, Categories) keeps the
+  standard shaded-header treatment unchanged. Matches the quieter table
+  treatment in the user-reviewed/approved design proposal (artifact:
+  `settings-redesign-proposal`). design-checker and a11y-checker both
+  independently confirmed, rendered, both themes: contrast still clears
+  AA against the real `.card` background (5.05:1 dark / 5.35:1 light),
+  no other table regressed, and the change is CSS-only (zero ARIA/DOM
+  impact). Logged here per §4's rule that a new component-pattern
+  variant is a deliberate design decision, not an implicit modifier —
+  design-checker flagged the missing entry; ruling is to log the
+  exception rather than revert, since the change is exactly what the
+  approved proposal called for and both checkers passed it on the merits.
+  Boss-approved.
+
 - **2026-07-26 — Manual "add" moves to account-locked drawers
   (Categories + Transactions), and manual creation may assign a recurring
   category.** Standing rules added ahead of the Reports-default /

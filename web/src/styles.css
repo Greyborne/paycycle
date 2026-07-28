@@ -491,6 +491,15 @@ input[type="checkbox"] { accent-color: var(--accent); }
 
 .table input[type="checkbox"] { width: 1.05rem; height: 1.05rem; }
 
+/* Bank accounts table (Settings > Accounts tab) only: quieter header to match
+   the settings-redesign mockup's table treatment — plain text on a bottom
+   border like the body rows, no shaded band / pill corners. Scoped to
+   .table-plain-head so every other .table in the app (Transactions, Reports,
+   Rules, Categories, Household, Admin) is unaffected. */
+.table.table-plain-head th { background: none; border-bottom: 1px solid var(--grid); }
+.table.table-plain-head thead th:first-child,
+.table.table-plain-head thead th:last-child { border-radius: 0; }
+
 /* ---------- period detail (multi-period columns) ---------- */
 
 /* the period window and yearly report want every pixel; lift the content cap */
@@ -703,7 +712,44 @@ input.category-name:hover, input.category-name:focus { border-color: var(--borde
 .toggle-archived { display: flex; align-items: center; gap: 0.4rem; }
 .toggle-archived input { width: auto; margin: 0; }
 
-.settings-page .card { max-width: 720px; }
+.content:has(.settings-page) { max-width: 1600px; }
+
+/* ---------- settings tabs (Settings.jsx) ---------- */
+/* Card grid inside each Settings tab panel — compact cards (Money,
+   Appearance, Balance health colors, Notifications, Password) pair up on
+   wide viewports via auto-fit; tables/multi-step editors opt into
+   .grid-full (grid-column: 1 / -1) so they never get squeezed into a half
+   column. Same gutter as the standard .card margin-bottom (1.1rem, §4), so
+   .card's own margin-bottom is zeroed inside the grid to avoid doubling up
+   (same idiom as .period-col > .card above). */
+.settings-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(420px, 100%), 1fr));
+  gap: 1.1rem;
+}
+.settings-grid > .card { margin-bottom: 0; }
+.grid-full { grid-column: 1 / -1; }
+
+/* Same Chromium scrollable-overflow leak documented above on .period-table:
+   below ~420px this grid's Bank accounts card must shrink its .table-scroll
+   table narrower than its natural width, and once that table needs its own
+   horizontal scroll, the overflow leaks past .table-scroll's box into the
+   page instead of staying contained — verified via getBoundingClientRect on
+   a real render at 375/390/412px (document.documentElement.scrollWidth grew
+   past the viewport only on this tab). contain: layout stops the leak with
+   no visual/paint effect, same as the .period-table fix. */
+.settings-grid .card:has(.table-scroll) { contain: layout; }
+
+/* Danger zone (Settings "Maintenance" tab): visually fenced with the
+   existing critical/health-negative semantic tokens (§4) — a red border plus
+   the same red-tinted background already used for the "negative" balance
+   badge, not a new color. Text inside already resolves through --ink/--ink-2
+   (.muted), both of which clear 4.5:1 against --health-negative-bg in both
+   themes — verified, not assumed, per §2's per-context contrast rule. */
+.card-danger-zone {
+  border-color: var(--critical);
+  background: var(--health-negative-bg);
+}
 
 /* ---------- import & reports ---------- */
 /* .mono-input: opt-in monospace treatment for textareas holding raw/opaque
@@ -1140,4 +1186,39 @@ input.category-name:hover, input.category-name:focus { border-color: var(--borde
   clip: rect(0, 0, 0, 0);
   white-space: nowrap;
   border: 0;
+}
+
+/* ---------- tabs (reusable primitive, see components/Tabs.jsx) ---------- */
+
+.tabs-list {
+  display: flex;
+  gap: 0.25rem;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 1.1rem;
+  flex-wrap: wrap;
+}
+
+.tabs-tab {
+  font: inherit;
+  font-weight: 550;
+  color: var(--ink-2);
+  background: transparent;
+  border: none;
+  border-bottom: 2px solid transparent;
+  border-radius: var(--radius-ctl) var(--radius-ctl) 0 0;
+  padding: 0.5rem 0.85rem;
+  margin-bottom: -1px;
+  cursor: pointer;
+}
+.tabs-tab:hover { background: var(--surface-2); color: var(--ink); }
+.tabs-tab.active { color: var(--accent-hi); border-bottom-color: var(--accent); font-weight: 650; }
+.tabs-tab:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+.tabs-panel:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: var(--radius-ctl);
 }
