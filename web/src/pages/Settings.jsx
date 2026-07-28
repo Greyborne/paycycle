@@ -309,8 +309,11 @@ export default function Settings() {
 
   const accountsTab = (
     <div className="settings-grid">
+      <BankAccountsCard />
+
       <section className="card grid-full" ref={scheduleSectionRef}>
         <h2 ref={sectionHeadingRef} tabIndex={-1}>Pay schedule</h2>
+        <p className="muted small">Cadence used to generate pay periods, per account.</p>
         {payPeriodConfigs.length === 1 ? (
           editingAccountId === payPeriodConfigs[0].accountId ? (
             <>
@@ -393,8 +396,6 @@ export default function Settings() {
         {scheduleError && <p className="form-error" role="alert">{scheduleError}</p>}
         {scheduleMessage && <p className="form-ok" role="status">{scheduleMessage}</p>}
       </section>
-
-      <BankAccountsCard />
     </div>
   );
 
