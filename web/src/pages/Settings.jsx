@@ -28,6 +28,11 @@ export default function Settings() {
   const [scheduleSaving, setScheduleSaving] = useState(false);
   const [scheduleError, setScheduleError] = useState(null);
   const [scheduleMessage, setScheduleMessage] = useState(null);
+  const [correctingAccountId, setCorrectingAccountId] = useState(null);
+  const [fixStartDate, setFixStartDate] = useState('');
+  const [fixSaving, setFixSaving] = useState(false);
+  const [fixError, setFixError] = useState(null);
+  const [fixMessage, setFixMessage] = useState(null);
   const [message, setMessage] = useState(null);
   const [error, setError] = useState(null);
   const [currentPassword, setCurrentPassword] = useState('');
@@ -57,6 +62,15 @@ export default function Settings() {
   const headingRefs = useRef(new Map());
   const prevEditingAccountId = useRef(null);
 
+  // Same open/close focus idiom as above, for the separate "Fix current
+  // period's start date…" toggle: fixInputRef is the date field to focus on
+  // open (only one of these can be open at a time, so a single ref is
+  // enough); fixTriggerRefs remembers each account's own trigger button so
+  // closing returns focus there instead of dropping to <body>.
+  const fixInputRef = useRef(null);
+  const fixTriggerRefs = useRef(new Map());
+  const prevCorrectingAccountId = useRef(null);
+
   const returnFocusToTrigger = (accountId) => {
     const btn = triggerRefs.current.get(accountId);
     if (btn && btn.isConnected) { btn.focus(); return; }
@@ -80,6 +94,18 @@ export default function Settings() {
     }
     prevEditingAccountId.current = editingAccountId;
   }, [editingAccountId]);
+
+  useEffect(() => {
+    const prev = prevCorrectingAccountId.current;
+    if (correctingAccountId != null) {
+      fixInputRef.current?.focus();
+    } else if (prev != null) {
+      const btn = fixTriggerRefs.current.get(prev);
+      if (btn && btn.isConnected) btn.focus();
+      else sectionHeadingRef.current?.focus();
+    }
+    prevCorrectingAccountId.current = correctingAccountId;
+  }, [correctingAccountId]);
 
   // The Recalculate button doesn't unmount like the schedule editor above,
   // but it does use native `disabled`, which drops focus to <body> the
@@ -144,6 +170,39 @@ export default function Settings() {
       setScheduleError(err.message);
     } finally {
       setScheduleSaving(false);
+    }
+  };
+
+  // Separate, narrower action from the cadence editor above: corrects only
+  // the account's currently-open pay period's own start/end date in place,
+  // via PUT /settings/schedule/:accountId/current-period. Does not touch
+  // pay_period_configs (the ongoing cadence) or any closed period.
+  const startFixCurrentPeriod = (accountId) => {
+    setFixError(null);
+    setFixMessage(null);
+    setFixStartDate('');
+    setCorrectingAccountId(accountId);
+  };
+
+  const cancelFixCurrentPeriod = () => {
+    setCorrectingAccountId(null);
+    setFixStartDate('');
+  };
+
+  const saveFixCurrentPeriod = async (accountId) => {
+    setFixSaving(true);
+    setFixError(null);
+    try {
+      const { period } = await api(`/settings/schedule/${accountId}/current-period`, {
+        method: 'PUT', body: { startDate: fixStartDate },
+      });
+      setCorrectingAccountId(null);
+      setFixStartDate('');
+      setFixMessage(`Current period start date corrected to ${period.start}.`);
+    } catch (err) {
+      setFixError(err.message);
+    } finally {
+      setFixSaving(false);
     }
   };
 
@@ -331,6 +390,31 @@ export default function Settings() {
                 </button>
               </div>
             </>
+          ) : correctingAccountId === payPeriodConfigs[0].accountId ? (
+            <>
+              <p className="muted small">
+                This changes the period's full start and end, and every period after it shifts too;
+                closed periods and your saved cadence setting are untouched.
+              </p>
+              <div className="field-row">
+                <label>
+                  Corrected start date
+                  <input
+                    type="date" ref={fixInputRef} value={fixStartDate}
+                    onChange={(e) => setFixStartDate(e.target.value)} required
+                  />
+                </label>
+              </div>
+              <div className="editor-actions">
+                <button type="button" className="btn btn-ghost" onClick={cancelFixCurrentPeriod}>Cancel</button>
+                <button
+                  type="button" className="btn btn-primary" disabled={fixSaving || !fixStartDate}
+                  onClick={() => saveFixCurrentPeriod(payPeriodConfigs[0].accountId)}
+                >
+                  Save
+                </button>
+              </div>
+            </>
           ) : (
             <div className="cadence-summary">
               <span className="muted">{cadenceSummary(payPeriodConfigs[0])}</span>
@@ -343,6 +427,16 @@ export default function Settings() {
                 onClick={() => startEditSchedule(payPeriodConfigs[0])}
               >
                 Change…
+              </button>
+              <button
+                type="button" className="btn btn-ghost"
+                ref={(el) => {
+                  if (el) fixTriggerRefs.current.set(payPeriodConfigs[0].accountId, el);
+                  else fixTriggerRefs.current.delete(payPeriodConfigs[0].accountId);
+                }}
+                onClick={() => startFixCurrentPeriod(payPeriodConfigs[0].accountId)}
+              >
+                Fix current period's start date…
               </button>
             </div>
           )
@@ -374,6 +468,31 @@ export default function Settings() {
                     </button>
                   </div>
                 </>
+              ) : correctingAccountId === config.accountId ? (
+                <>
+                  <p className="muted small">
+                    This changes the period's full start and end, and every period after it shifts too;
+                    closed periods and your saved cadence setting are untouched.
+                  </p>
+                  <div className="field-row">
+                    <label>
+                      Corrected start date
+                      <input
+                        type="date" ref={fixInputRef} value={fixStartDate}
+                        onChange={(e) => setFixStartDate(e.target.value)} required
+                      />
+                    </label>
+                  </div>
+                  <div className="editor-actions">
+                    <button type="button" className="btn btn-ghost" onClick={cancelFixCurrentPeriod}>Cancel</button>
+                    <button
+                      type="button" className="btn btn-primary" disabled={fixSaving || !fixStartDate}
+                      onClick={() => saveFixCurrentPeriod(config.accountId)}
+                    >
+                      Save
+                    </button>
+                  </div>
+                </>
               ) : (
                 <div className="cadence-summary">
                   <span className="muted">{cadenceSummary(config)}</span>
@@ -388,6 +507,17 @@ export default function Settings() {
                   >
                     Change…
                   </button>
+                  <button
+                    type="button" className="btn btn-ghost"
+                    aria-label={`Fix current period's start date for ${config.accountName}`}
+                    ref={(el) => {
+                      if (el) fixTriggerRefs.current.set(config.accountId, el);
+                      else fixTriggerRefs.current.delete(config.accountId);
+                    }}
+                    onClick={() => startFixCurrentPeriod(config.accountId)}
+                  >
+                    Fix current period's start date…
+                  </button>
                 </div>
               )}
             </React.Fragment>
@@ -395,6 +525,8 @@ export default function Settings() {
         )}
         {scheduleError && <p className="form-error" role="alert">{scheduleError}</p>}
         {scheduleMessage && <p className="form-ok" role="status">{scheduleMessage}</p>}
+        {fixError && <p className="form-error" role="alert">{fixError}</p>}
+        {fixMessage && <p className="form-ok" role="status">{fixMessage}</p>}
       </section>
     </div>
   );

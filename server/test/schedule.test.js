@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  addDays, addMonths, daysBetween, monthlyOccurrences, periodAfter, periodBefore, periodContaining,
+  addDays, addMonths, daysBetween, monthlyOccurrences, nextPeriodAfter, periodAfter, periodBefore, periodContaining,
 } from '../services/schedule.js';
 import { effectiveAmount, plannedForPeriod } from '../services/budget.js';
 
@@ -23,6 +23,29 @@ test('biweekly periods anchor correctly', () => {
   const p = periodContaining(cfg, '2026-07-05');
   assert.deepEqual(periodAfter(cfg, p), { start: '2026-07-10', end: '2026-07-23' });
   assert.deepEqual(periodBefore(cfg, p), { start: '2026-06-12', end: '2026-06-25' });
+});
+
+test('nextPeriodAfter clips overlap after a mid-history cadence change', () => {
+  // Regression guard: an account's still-open real period is 2026-06-26 to
+  // 2026-07-09 (biweekly, old anchor). The cadence changes to a new anchor
+  // (2026-06-29) that falls INSIDE that period - exactly the settings.js
+  // "existing real periods are kept as-is" scenario. Without clipping, the
+  // naively-computed next period would overlap the still-open real one.
+  const changedCfg = { cadence: 'biweekly', anchor_date: '2026-06-29' };
+  const lastReal = { start: '2026-06-26', end: '2026-07-09' };
+
+  // Prove the naive/unclipped computation really would overlap, so this test
+  // is guarding something real.
+  const naive = periodContaining(changedCfg, addDays(lastReal.end, 1));
+  assert.ok(naive.start <= lastReal.end, 'test setup: the naive next period must actually overlap for this to be a meaningful regression guard');
+
+  const next = nextPeriodAfter(changedCfg, lastReal);
+  assert.equal(next.start, addDays(lastReal.end, 1), 'clipped next period must start the day after the last real one');
+  assert.ok(next.start > lastReal.end && next.end > lastReal.end, 'clipped next period must not overlap the last real one');
+
+  // No cadence change: nextPeriodAfter must behave exactly like periodAfter.
+  const stableCfg = { cadence: 'biweekly', anchor_date: '2026-06-26' };
+  assert.deepEqual(nextPeriodAfter(stableCfg, lastReal), periodAfter(stableCfg, lastReal));
 });
 
 test('weekly and custom intervals', () => {

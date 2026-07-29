@@ -334,7 +334,7 @@ input:focus, select:focus, textarea:focus, button:focus-visible, a:focus-visible
 .cadence-option input { width: auto; margin-top: 0.2rem; accent-color: var(--accent); }
 .cadence-option small { display: block; font-weight: 400; }
 .cadence-detail { margin-top: 0.75rem; }
-.cadence-summary { display: flex; align-items: center; gap: 1rem; }
+.cadence-summary { display: flex; align-items: center; gap: 1rem; flex-wrap: wrap; }
 
 .wizard-nav { display: flex; justify-content: space-between; align-items: center; margin-top: 1.25rem; gap: 0.5rem; }
 
