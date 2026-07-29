@@ -9,7 +9,7 @@
 
 import { pool, q } from '../db.js';
 import {
-  addDays, addMonths, monthlyOccurrences, periodAfter, periodBefore, periodContaining, todayISO,
+  addDays, addMonths, monthlyOccurrences, nextPeriodAfter, periodAfter, periodBefore, periodContaining, todayISO,
 } from './schedule.js';
 
 export async function getUser(userId) {
@@ -455,8 +455,11 @@ export async function setAmountGoingForward(dbc, budgetId, cfg, categoryTemplate
 // Periods are now per-account rows (migration 013): only templates that
 // belong to `periodRow.account_id` - a template belongs to account A when
 // (template.account_id ?? defaultAccountId) === A - generate a line item on
-// it, and the item is always attributed to that period's account.
-async function syncLineItems(client, periodRow, templates, defaultAccountId) {
+// it, and the item is always attributed to that period's account. Exported
+// so routes/settings.js's current-period correction can resync a period's
+// line items after moving its boundary, the same way ensureMaterialized
+// does for a freshly materialized one.
+export async function syncLineItems(client, periodRow, templates, defaultAccountId) {
   for (const t of templates) {
     if (t.category_type === 'tag') continue; // tags never generate line items
     if ((t.account_id ?? defaultAccountId) !== periodRow.account_id) continue;
@@ -513,14 +516,10 @@ export async function ensureMaterialized(budgetId) {
         const anchor = startRows[0].s && startRows[0].s < today ? startRows[0].s : today;
         next = periodContaining(cfg, anchor);
       } else {
-        next = periodContaining(cfg, addDays(last[0].end_date, 1));
         // If the cadence config changed, the next computed period can overlap
-        // the last real one; clip it so real periods never overlap.
-        if (next.start <= last[0].end_date) {
-          next = next.end > last[0].end_date
-            ? { start: addDays(last[0].end_date, 1), end: next.end }
-            : periodAfter(cfg, { start: next.start, end: last[0].end_date });
-        }
+        // the last real one; nextPeriodAfter clips it so real periods never
+        // overlap.
+        next = nextPeriodAfter(cfg, { start: last[0].start_date, end: last[0].end_date });
       }
       while (next.start <= today) {
         const { rows } = await client.query(
@@ -718,13 +717,7 @@ export async function buildProjection(budget, cfg, { months = 24, accountId = nu
     });
 
     // Advance, clipping overlap after a mid-history cadence change.
-    let next = periodContaining(cfg, addDays(period.end, 1));
-    if (next.start <= period.end) {
-      next = next.end > period.end
-        ? { start: addDays(period.end, 1), end: next.end }
-        : periodAfter(cfg, { start: next.start, end: period.end });
-    }
-    period = next;
+    period = nextPeriodAfter(cfg, period);
   }
 
   const future = entries.filter((e) => !e.isCurrent && e.start > today);
@@ -781,12 +774,7 @@ export async function getLifecycle(budgetId, cfg, accountId = null) {
 // generate line items on the new row (syncLineItems filters to
 // periodRow.account_id).
 export async function materializePeriodAfter(budgetId, accountId, cfg, period) {
-  let next = periodContaining(cfg, addDays(period.end, 1));
-  if (next.start <= period.end) {
-    next = next.end > period.end
-      ? { start: addDays(period.end, 1), end: next.end }
-      : periodAfter(cfg, { start: next.start, end: period.end });
-  }
+  const next = nextPeriodAfter(cfg, period);
   const templates = await loadTemplates(budgetId);
   const defaultAccountId = await getDefaultAccountId(budgetId);
   const client = await pool.connect();
@@ -1003,12 +991,24 @@ export async function getPeriodDetail(budget, cfg, startDate, accountId = null) 
       income: items.filter((i) => i.type === 'income'),
       transactions: txns,
       summary,
+      // Not part of the documented API shape - withNav (routes/periods.js)
+      // reads this to compute clip-aware nav.nextStart/prevStart and strips
+      // it back out before responding.
+      entries: projection.entries,
     };
   }
 
-  // Virtual period: must be a valid schedule period.
-  const computed = periodContaining(cfg, startDate);
-  if (computed.start !== startDate && startDate > today) return null;
+  // Virtual period: must correspond to an already-resolved, clip-aware
+  // schedule period - either the pre-history reconstruction above, or an
+  // entry found in projection.entries' forward walk (`entry`, resolved near
+  // the top of this function). A startDate matching neither is not a valid
+  // period for this account (e.g. it would fall inside/before the account's
+  // actual last real period, computed under a stale cadence after a
+  // schedule change) - it must never be independently recomputed via raw
+  // periodContaining, which is oblivious to that clipping and would
+  // construct a phantom period overlapping a real one.
+  if (!entry) return null;
+  const computed = { start: entry.start, end: entry.end };
   let templates = (await loadTemplates(budget.id))
     .filter((t) => t.category_type !== 'tag' && templateInPeriod(t, computed));
   if (scope) templates = templates.filter((t) => (t.account_id ?? scope.defaultId) === scope.accountId);
@@ -1049,6 +1049,7 @@ export async function getPeriodDetail(budget, cfg, startDate, accountId = null) 
     expenses: mk('expense'),
     income: mk('income'),
     transactions: [],
-    summary: entry || null,
+    summary: entry,
+    entries: projection.entries,
   };
 }

@@ -104,6 +104,28 @@ export function periodBefore(cfg, period) {
   return periodContaining(cfg, addDays(period.start, -1));
 }
 
+// The schedule period that follows `last` ({ start, end }; only `.end` is
+// used), clipped so it can never start on or before `last.end` even after a
+// mid-history cadence change moves the schedule's grid out from under it.
+// Naively calling periodContaining(cfg, addDays(last.end, 1)) after an
+// anchor/cadence change can land a "next" period that starts inside or
+// before `last` (e.g. `last` = 2026-06-26..2026-07-09, new anchor
+// 2026-06-29: raw next computes to 2026-06-29..2026-07-12, which overlaps
+// the 26th-9th period by two weeks). This is the single shared
+// implementation of that clip - every caller that must derive "the next
+// period after this already-known-good one" (ensureMaterialized,
+// buildProjection, materializePeriodAfter, and periods.js's nav) uses this
+// instead of re-deriving the same three-line pattern.
+export function nextPeriodAfter(cfg, last) {
+  let next = periodContaining(cfg, addDays(last.end, 1));
+  if (next.start <= last.end) {
+    next = next.end > last.end
+      ? { start: addDays(last.end, 1), end: next.end }
+      : periodAfter(cfg, { start: next.start, end: last.end });
+  }
+  return next;
+}
+
 // Dates within [startISO, endISO] that are the given day-of-month (clamped
 // into short months). A period can contain zero, one, or - for long custom
 // periods - multiple occurrences.

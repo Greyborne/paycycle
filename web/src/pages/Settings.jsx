@@ -5,12 +5,14 @@ import { centsToInput, parseMoney } from '../format.js';
 import { CadenceFields, cadenceBody } from './Onboarding.jsx';
 import { THEME_MODES, useTheme } from '../App.jsx';
 import HouseholdCard from '../components/HouseholdCard.jsx';
-import AccountsCard from '../components/AccountsCard.jsx';
+import { BankAccountsCard, DangerZoneCard } from '../components/AccountsCard.jsx';
+import Tabs from '../components/Tabs.jsx';
+import Admin from './Admin.jsx';
 
 const CURRENCIES = ['USD', 'EUR', 'GBP', 'CAD', 'AUD', 'NZD', 'JPY', 'CHF', 'SEK', 'NOK', 'DKK', 'PLN', 'BRL', 'MXN', 'INR', 'ZAR'];
 
 export default function Settings() {
-  const { refreshUser } = useAuth();
+  const { user, refreshUser } = useAuth();
   const { themeMode, setThemeMode } = useTheme();
   const [loaded, setLoaded] = useState(false);
   const [currency, setCurrency] = useState('USD');
@@ -26,6 +28,11 @@ export default function Settings() {
   const [scheduleSaving, setScheduleSaving] = useState(false);
   const [scheduleError, setScheduleError] = useState(null);
   const [scheduleMessage, setScheduleMessage] = useState(null);
+  const [correctingAccountId, setCorrectingAccountId] = useState(null);
+  const [fixStartDate, setFixStartDate] = useState('');
+  const [fixSaving, setFixSaving] = useState(false);
+  const [fixError, setFixError] = useState(null);
+  const [fixMessage, setFixMessage] = useState(null);
   const [message, setMessage] = useState(null);
   const [error, setError] = useState(null);
   const [currentPassword, setCurrentPassword] = useState('');
@@ -55,6 +62,15 @@ export default function Settings() {
   const headingRefs = useRef(new Map());
   const prevEditingAccountId = useRef(null);
 
+  // Same open/close focus idiom as above, for the separate "Fix current
+  // period's start date…" toggle: fixInputRef is the date field to focus on
+  // open (only one of these can be open at a time, so a single ref is
+  // enough); fixTriggerRefs remembers each account's own trigger button so
+  // closing returns focus there instead of dropping to <body>.
+  const fixInputRef = useRef(null);
+  const fixTriggerRefs = useRef(new Map());
+  const prevCorrectingAccountId = useRef(null);
+
   const returnFocusToTrigger = (accountId) => {
     const btn = triggerRefs.current.get(accountId);
     if (btn && btn.isConnected) { btn.focus(); return; }
@@ -78,6 +94,18 @@ export default function Settings() {
     }
     prevEditingAccountId.current = editingAccountId;
   }, [editingAccountId]);
+
+  useEffect(() => {
+    const prev = prevCorrectingAccountId.current;
+    if (correctingAccountId != null) {
+      fixInputRef.current?.focus();
+    } else if (prev != null) {
+      const btn = fixTriggerRefs.current.get(prev);
+      if (btn && btn.isConnected) btn.focus();
+      else sectionHeadingRef.current?.focus();
+    }
+    prevCorrectingAccountId.current = correctingAccountId;
+  }, [correctingAccountId]);
 
   // The Recalculate button doesn't unmount like the schedule editor above,
   // but it does use native `disabled`, which drops focus to <body> the
@@ -142,6 +170,39 @@ export default function Settings() {
       setScheduleError(err.message);
     } finally {
       setScheduleSaving(false);
+    }
+  };
+
+  // Separate, narrower action from the cadence editor above: corrects only
+  // the account's currently-open pay period's own start/end date in place,
+  // via PUT /settings/schedule/:accountId/current-period. Does not touch
+  // pay_period_configs (the ongoing cadence) or any closed period.
+  const startFixCurrentPeriod = (accountId) => {
+    setFixError(null);
+    setFixMessage(null);
+    setFixStartDate('');
+    setCorrectingAccountId(accountId);
+  };
+
+  const cancelFixCurrentPeriod = () => {
+    setCorrectingAccountId(null);
+    setFixStartDate('');
+  };
+
+  const saveFixCurrentPeriod = async (accountId) => {
+    setFixSaving(true);
+    setFixError(null);
+    try {
+      const { period } = await api(`/settings/schedule/${accountId}/current-period`, {
+        method: 'PUT', body: { startDate: fixStartDate },
+      });
+      setCorrectingAccountId(null);
+      setFixStartDate('');
+      setFixMessage(`Current period start date corrected to ${period.start}.`);
+    } catch (err) {
+      setFixError(err.message);
+    } finally {
+      setFixSaving(false);
     }
   };
 
@@ -212,182 +273,267 @@ export default function Settings() {
     }
   };
 
-  return (
-    <div className="settings-page">
-      <form onSubmit={save}>
-        <section className="card">
-          <h2>Money</h2>
-          <div className="field-row">
-            <label>
-              Currency
-              <select value={currency} onChange={(e) => setCurrency(e.target.value)}>
-                {[...new Set([currency, ...CURRENCIES])].map((c) => <option key={c} value={c}>{c}</option>)}
-              </select>
-            </label>
-          </div>
-          <p className="muted small">Starting balances are set per bank account below.</p>
-        </section>
+  const generalTab = (
+    <form className="settings-grid" onSubmit={save}>
+      <section className="card">
+        <h2>Money</h2>
+        <div className="field-row">
+          <label>
+            Currency
+            <select value={currency} onChange={(e) => setCurrency(e.target.value)}>
+              {[...new Set([currency, ...CURRENCIES])].map((c) => <option key={c} value={c}>{c}</option>)}
+            </select>
+          </label>
+        </div>
+        <p className="muted small">Starting balances are set per bank account below.</p>
+      </section>
 
-        <section className="card">
-          <h2>Balance health colors</h2>
+      <section className="card">
+        <h2>Appearance</h2>
+        <p className="muted small">
+          Choose light or dark, or follow your device setting. This is stored on this browser only.
+        </p>
+        <div className="range-picker" role="group" aria-label="Theme">
+          {THEME_MODES.map((m) => (
+            <button
+              key={m}
+              type="button"
+              className={`btn btn-ghost ${themeMode === m ? 'active' : ''}`}
+              onClick={() => setThemeMode(m)}
+            >
+              {m[0].toUpperCase() + m.slice(1)}
+            </button>
+          ))}
+        </div>
+      </section>
+
+      <section className="card">
+        <h2>Balance health colors</h2>
+        <p className="muted small">
+          Balances are color-coded: <strong>red</strong> below zero, <strong>amber</strong> up to the
+          “thin” threshold, <strong>blue</strong> up to the “healthy” threshold, <strong>green</strong>{' '}
+          above it. Tune these to your own risk tolerance.
+        </p>
+        <div className="field-row">
+          <label>
+            “Thin” threshold
+            <input type="text" inputMode="decimal" value={low} onChange={(e) => setLow(e.target.value)} />
+          </label>
+          <label>
+            “Healthy” threshold
+            <input type="text" inputMode="decimal" value={healthy} onChange={(e) => setHealthy(e.target.value)} />
+          </label>
+          <label>
+            Projection warning threshold
+            <input
+              type="text" inputMode="decimal" value={warning} onChange={(e) => setWarning(e.target.value)}
+              title="Flag the first future period projected below this amount (0 = only flag negative)"
+            />
+          </label>
+          <label>
+            Drift alert threshold
+            <input
+              type="text" inputMode="decimal" value={drift} onChange={(e) => setDrift(e.target.value)}
+              title="Suggest updating a recurring plan when a transaction differs from it by more than this (or 5%, whichever is larger)"
+            />
+          </label>
+        </div>
+      </section>
+
+      <section className="card">
+        <h2>Notifications</h2>
+        {emailEnabled ? (
+          <label className="toggle-archived">
+            <input
+              type="checkbox" checked={emailNotifications}
+              onChange={(e) => setEmailNotifications(e.target.checked)}
+            />
+            Email me new notifications (bills due, projection warnings) at my account address
+          </label>
+        ) : (
           <p className="muted small">
-            Balances are color-coded: <strong>red</strong> below zero, <strong>amber</strong> up to the
-            “thin” threshold, <strong>blue</strong> up to the “healthy” threshold, <strong>green</strong>{' '}
-            above it. Tune these to your own risk tolerance.
+            In-app notifications are always on (the bell in the header). To also receive them by
+            email, the server admin needs to configure SMTP — see the README.
           </p>
-          <div className="field-row">
-            <label>
-              “Thin” threshold
-              <input type="text" inputMode="decimal" value={low} onChange={(e) => setLow(e.target.value)} />
-            </label>
-            <label>
-              “Healthy” threshold
-              <input type="text" inputMode="decimal" value={healthy} onChange={(e) => setHealthy(e.target.value)} />
-            </label>
-            <label>
-              Projection warning threshold
-              <input
-                type="text" inputMode="decimal" value={warning} onChange={(e) => setWarning(e.target.value)}
-                title="Flag the first future period projected below this amount (0 = only flag negative)"
-              />
-            </label>
-            <label>
-              Drift alert threshold
-              <input
-                type="text" inputMode="decimal" value={drift} onChange={(e) => setDrift(e.target.value)}
-                title="Suggest updating a recurring plan when a transaction differs from it by more than this (or 5%, whichever is larger)"
-              />
-            </label>
-          </div>
-        </section>
+        )}
+      </section>
 
-        <section className="card">
-          <h2>Appearance</h2>
-          <p className="muted small">
-            Choose light or dark, or follow your device setting. This is stored on this browser only.
-          </p>
-          <div className="range-picker" role="group" aria-label="Theme">
-            {THEME_MODES.map((m) => (
-              <button
-                key={m}
-                type="button"
-                className={`btn btn-ghost ${themeMode === m ? 'active' : ''}`}
-                onClick={() => setThemeMode(m)}
-              >
-                {m[0].toUpperCase() + m.slice(1)}
-              </button>
-            ))}
-          </div>
-        </section>
-
-        <section className="card">
-          <h2>Notifications</h2>
-          {emailEnabled ? (
-            <label className="toggle-archived">
-              <input
-                type="checkbox" checked={emailNotifications}
-                onChange={(e) => setEmailNotifications(e.target.checked)}
-              />
-              Email me new notifications (bills due, projection warnings) at my account address
-            </label>
-          ) : (
-            <p className="muted small">
-              In-app notifications are always on (the bell in the header). To also receive them by
-              email, the server admin needs to configure SMTP — see the README.
-            </p>
-          )}
-        </section>
-
-        <section className="card" ref={scheduleSectionRef}>
-          <h2 ref={sectionHeadingRef} tabIndex={-1}>Pay schedule</h2>
-          {payPeriodConfigs.length === 1 ? (
-            editingAccountId === payPeriodConfigs[0].accountId ? (
-              <>
-                <p className="muted small">
-                  Existing recorded periods are kept as-is; the new schedule applies from your next period forward.
-                </p>
-                <CadenceFields form={editForm} setForm={setEditForm} />
-                <div className="editor-actions">
-                  <button type="button" className="btn btn-ghost" onClick={cancelEditSchedule}>Cancel</button>
-                  <button
-                    type="button" className="btn btn-primary" disabled={scheduleSaving}
-                    onClick={() => saveSchedule(payPeriodConfigs[0].accountId)}
-                  >
-                    Save schedule
-                  </button>
-                </div>
-              </>
-            ) : (
-              <div className="cadence-summary">
-                <span className="muted">{cadenceSummary(payPeriodConfigs[0])}</span>
-                <button
-                  type="button" className="btn btn-ghost"
-                  ref={(el) => {
-                    if (el) triggerRefs.current.set(payPeriodConfigs[0].accountId, el);
-                    else triggerRefs.current.delete(payPeriodConfigs[0].accountId);
-                  }}
-                  onClick={() => startEditSchedule(payPeriodConfigs[0])}
-                >
-                  Change…
-                </button>
-              </div>
-            )
-          ) : (
-            payPeriodConfigs.map((config) => (
-              <React.Fragment key={config.accountId}>
-                <h3
-                  tabIndex={-1}
-                  ref={(el) => {
-                    if (el) headingRefs.current.set(config.accountId, el);
-                    else headingRefs.current.delete(config.accountId);
-                  }}
-                >
-                  {config.accountName}
-                </h3>
-                {editingAccountId === config.accountId ? (
-                  <>
-                    <p className="muted small">
-                      Existing recorded periods are kept as-is; the new schedule applies from your next period forward.
-                    </p>
-                    <CadenceFields form={editForm} setForm={setEditForm} />
-                    <div className="editor-actions">
-                      <button type="button" className="btn btn-ghost" onClick={cancelEditSchedule}>Cancel</button>
-                      <button
-                        type="button" className="btn btn-primary" disabled={scheduleSaving}
-                        onClick={() => saveSchedule(config.accountId)}
-                      >
-                        Save schedule
-                      </button>
-                    </div>
-                  </>
-                ) : (
-                  <div className="cadence-summary">
-                    <span className="muted">{cadenceSummary(config)}</span>
-                    <button
-                      type="button" className="btn btn-ghost"
-                      aria-label={`Change ${config.accountName} pay schedule`}
-                      ref={(el) => {
-                        if (el) triggerRefs.current.set(config.accountId, el);
-                        else triggerRefs.current.delete(config.accountId);
-                      }}
-                      onClick={() => startEditSchedule(config)}
-                    >
-                      Change…
-                    </button>
-                  </div>
-                )}
-              </React.Fragment>
-            ))
-          )}
-          {scheduleError && <p className="form-error" role="alert">{scheduleError}</p>}
-          {scheduleMessage && <p className="form-ok" role="status">{scheduleMessage}</p>}
-        </section>
-
+      <div className="grid-full">
         {error && <p className="form-error" role="alert">{error}</p>}
         {message && <p className="form-ok" role="status">{message}</p>}
         <button className="btn btn-primary">Save settings</button>
-      </form>
+      </div>
+    </form>
+  );
 
+  const accountsTab = (
+    <div className="settings-grid">
+      <BankAccountsCard />
+
+      <section className="card grid-full" ref={scheduleSectionRef}>
+        <h2 ref={sectionHeadingRef} tabIndex={-1}>Pay schedule</h2>
+        <p className="muted small">Cadence used to generate pay periods, per account.</p>
+        {payPeriodConfigs.length === 1 ? (
+          editingAccountId === payPeriodConfigs[0].accountId ? (
+            <>
+              <p className="muted small">
+                Existing recorded periods are kept as-is; the new schedule applies from your next period forward.
+              </p>
+              <CadenceFields form={editForm} setForm={setEditForm} />
+              <div className="editor-actions">
+                <button type="button" className="btn btn-ghost" onClick={cancelEditSchedule}>Cancel</button>
+                <button
+                  type="button" className="btn btn-primary" disabled={scheduleSaving}
+                  onClick={() => saveSchedule(payPeriodConfigs[0].accountId)}
+                >
+                  Save schedule
+                </button>
+              </div>
+            </>
+          ) : correctingAccountId === payPeriodConfigs[0].accountId ? (
+            <>
+              <p className="muted small">
+                This changes the period's full start and end, and every period after it shifts too;
+                closed periods and your saved cadence setting are untouched.
+              </p>
+              <div className="field-row">
+                <label>
+                  Corrected start date
+                  <input
+                    type="date" ref={fixInputRef} value={fixStartDate}
+                    onChange={(e) => setFixStartDate(e.target.value)} required
+                  />
+                </label>
+              </div>
+              <div className="editor-actions">
+                <button type="button" className="btn btn-ghost" onClick={cancelFixCurrentPeriod}>Cancel</button>
+                <button
+                  type="button" className="btn btn-primary" disabled={fixSaving || !fixStartDate}
+                  onClick={() => saveFixCurrentPeriod(payPeriodConfigs[0].accountId)}
+                >
+                  Save
+                </button>
+              </div>
+            </>
+          ) : (
+            <div className="cadence-summary">
+              <span className="muted">{cadenceSummary(payPeriodConfigs[0])}</span>
+              <button
+                type="button" className="btn btn-ghost"
+                ref={(el) => {
+                  if (el) triggerRefs.current.set(payPeriodConfigs[0].accountId, el);
+                  else triggerRefs.current.delete(payPeriodConfigs[0].accountId);
+                }}
+                onClick={() => startEditSchedule(payPeriodConfigs[0])}
+              >
+                Change…
+              </button>
+              <button
+                type="button" className="btn btn-ghost"
+                ref={(el) => {
+                  if (el) fixTriggerRefs.current.set(payPeriodConfigs[0].accountId, el);
+                  else fixTriggerRefs.current.delete(payPeriodConfigs[0].accountId);
+                }}
+                onClick={() => startFixCurrentPeriod(payPeriodConfigs[0].accountId)}
+              >
+                Fix current period's start date…
+              </button>
+            </div>
+          )
+        ) : (
+          payPeriodConfigs.map((config) => (
+            <React.Fragment key={config.accountId}>
+              <h3
+                tabIndex={-1}
+                ref={(el) => {
+                  if (el) headingRefs.current.set(config.accountId, el);
+                  else headingRefs.current.delete(config.accountId);
+                }}
+              >
+                {config.accountName}
+              </h3>
+              {editingAccountId === config.accountId ? (
+                <>
+                  <p className="muted small">
+                    Existing recorded periods are kept as-is; the new schedule applies from your next period forward.
+                  </p>
+                  <CadenceFields form={editForm} setForm={setEditForm} />
+                  <div className="editor-actions">
+                    <button type="button" className="btn btn-ghost" onClick={cancelEditSchedule}>Cancel</button>
+                    <button
+                      type="button" className="btn btn-primary" disabled={scheduleSaving}
+                      onClick={() => saveSchedule(config.accountId)}
+                    >
+                      Save schedule
+                    </button>
+                  </div>
+                </>
+              ) : correctingAccountId === config.accountId ? (
+                <>
+                  <p className="muted small">
+                    This changes the period's full start and end, and every period after it shifts too;
+                    closed periods and your saved cadence setting are untouched.
+                  </p>
+                  <div className="field-row">
+                    <label>
+                      Corrected start date
+                      <input
+                        type="date" ref={fixInputRef} value={fixStartDate}
+                        onChange={(e) => setFixStartDate(e.target.value)} required
+                      />
+                    </label>
+                  </div>
+                  <div className="editor-actions">
+                    <button type="button" className="btn btn-ghost" onClick={cancelFixCurrentPeriod}>Cancel</button>
+                    <button
+                      type="button" className="btn btn-primary" disabled={fixSaving || !fixStartDate}
+                      onClick={() => saveFixCurrentPeriod(config.accountId)}
+                    >
+                      Save
+                    </button>
+                  </div>
+                </>
+              ) : (
+                <div className="cadence-summary">
+                  <span className="muted">{cadenceSummary(config)}</span>
+                  <button
+                    type="button" className="btn btn-ghost"
+                    aria-label={`Change ${config.accountName} pay schedule`}
+                    ref={(el) => {
+                      if (el) triggerRefs.current.set(config.accountId, el);
+                      else triggerRefs.current.delete(config.accountId);
+                    }}
+                    onClick={() => startEditSchedule(config)}
+                  >
+                    Change…
+                  </button>
+                  <button
+                    type="button" className="btn btn-ghost"
+                    aria-label={`Fix current period's start date for ${config.accountName}`}
+                    ref={(el) => {
+                      if (el) fixTriggerRefs.current.set(config.accountId, el);
+                      else fixTriggerRefs.current.delete(config.accountId);
+                    }}
+                    onClick={() => startFixCurrentPeriod(config.accountId)}
+                  >
+                    Fix current period's start date…
+                  </button>
+                </div>
+              )}
+            </React.Fragment>
+          ))
+        )}
+        {scheduleError && <p className="form-error" role="alert">{scheduleError}</p>}
+        {scheduleMessage && <p className="form-ok" role="status">{scheduleMessage}</p>}
+        {fixError && <p className="form-error" role="alert">{fixError}</p>}
+        {fixMessage && <p className="form-ok" role="status">{fixMessage}</p>}
+      </section>
+    </div>
+  );
+
+  const householdTab = (
+    <div className="settings-grid">
+      <HouseholdCard />
       <section className="card">
         <h2>Password</h2>
         <form onSubmit={changePassword}>
@@ -419,8 +565,12 @@ export default function Settings() {
           <button className="btn btn-primary" disabled={passwordSubmitting}>Change password</button>
         </form>
       </section>
+    </div>
+  );
 
-      <section className="card">
+  const maintenanceTab = (
+    <div className="settings-grid">
+      <section className="card grid-full">
         <h2>Maintenance</h2>
         <p className="muted small">
           Rebuild the Actual column for open periods from your current transactions. Fixes leftover
@@ -437,8 +587,32 @@ export default function Settings() {
         {recalculateMessage && <p className="form-ok" role="status">{recalculateMessage}</p>}
       </section>
 
-      <AccountsCard />
-      <HouseholdCard />
+      <DangerZoneCard />
+    </div>
+  );
+
+  // Admin status here is purely a UX shortcut for whether to show the tab at
+  // all — the server independently re-derives and enforces it on every
+  // /admin/* request (server/routes/admin.js), unchanged by this build.
+  const adminTab = (
+    <div className="settings-grid">
+      <Admin />
+    </div>
+  );
+
+  const tabs = [
+    { id: 'general', label: 'General', content: generalTab },
+    { id: 'accounts', label: 'Accounts', content: accountsTab },
+    { id: 'household-security', label: 'Household & Security', content: householdTab },
+    { id: 'maintenance', label: 'Maintenance', content: maintenanceTab },
+  ];
+  if (user.isAdmin) {
+    tabs.push({ id: 'admin', label: 'Admin', content: adminTab });
+  }
+
+  return (
+    <div className="settings-page">
+      <Tabs defaultTab="general" tabs={tabs} />
     </div>
   );
 }

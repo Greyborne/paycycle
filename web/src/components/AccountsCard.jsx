@@ -201,7 +201,10 @@ function AccountRow({ account, currency, onPatch }) {
   );
 }
 
-export default function AccountsCard() {
+// Bank accounts table + add-account form + archive/restore. Split out of the
+// former single AccountsCard so it can render in its own tab panel (Settings
+// "Accounts" tab) without pulling in the Danger zone actions below.
+export function BankAccountsCard() {
   const { user } = useAuth();
   const { accounts, reload } = useAccounts();
   const [name, setName] = useState('');
@@ -212,18 +215,6 @@ export default function AccountsCard() {
   const [cadence, setCadence] = useState('biweekly');
   const [intervalDays, setIntervalDays] = useState('14');
   const [error, setError] = useState(null);
-  const [deletingTxnsId, setDeletingTxnsId] = useState(null);
-  const [resetError, setResetError] = useState(null);
-  const [resetMessage, setResetMessage] = useState(null);
-  const [resettingId, setResettingId] = useState(null);
-  // Set when POST /accounts/:id/reset 400s because the chosen startedOn
-  // would predate/land on a closed period. Holds the account id and the
-  // startedOn already typed in, so the "reset anyway" retry (closedPeriods:
-  // 'confirm') doesn't make the user re-enter anything.
-  const [resetBlock, setResetBlock] = useState(null);
-  const [deleteError, setDeleteError] = useState(null);
-  const [deleteMessage, setDeleteMessage] = useState(null);
-  const [deletingAccountId, setDeletingAccountId] = useState(null);
 
   if (!accounts) return null;
 
@@ -267,6 +258,106 @@ export default function AccountsCard() {
       setError(err.message);
     }
   };
+
+  const total = accounts.reduce((s, a) => s + a.balanceCents, 0);
+
+  return (
+    <section className="card grid-full">
+      <h2>Bank accounts</h2>
+      <p className="muted small">
+        Balances and projections are tracked per account — use the switcher in the top bar to change
+        which one you're viewing, and set each category's account on the Categories page. The starting
+        balance is what the account held going into its <em>tracking from</em> date; categories on the
+        account default to that date. Net worth across all accounts is {fmtMoney(total, user.currency)}.
+        Archiving hides an account from pickers but keeps its history in the totals.
+      </p>
+      <div className="table-scroll">
+        <table className="table table-plain-head">
+          <thead>
+            <tr>
+              <th>Name</th><th>Type</th><th className="num">Starting balance</th><th>Tracking from</th>
+              <th className="num">Current balance</th><th className="center">Default</th><th><span className="sr-only">Actions</span></th>
+            </tr>
+          </thead>
+          <tbody>
+            {accounts.map((a) => (
+              <AccountRow key={a.id} account={a} currency={user.currency} onPatch={patch} />
+            ))}
+          </tbody>
+        </table>
+      </div>
+      <form className="quick-add" onSubmit={add}>
+        <input value={name} onChange={(e) => setName(e.target.value)} placeholder="New account name" aria-label="New account name" required />
+        <select value={type} onChange={(e) => setType(e.target.value)} aria-label="New account type">
+          {TYPES.map((t) => <option key={t} value={t}>{t}</option>)}
+        </select>
+        <input value={starting} onChange={(e) => setStarting(e.target.value)} inputMode="decimal" placeholder="Starting balance" aria-label="Starting balance" />
+        <input
+          type="date" value={startedOn} onChange={(e) => setStartedOn(e.target.value)}
+          title="Tracking start — defaults to the current pay period"
+          aria-label="Tracking from"
+        />
+        <input
+          value={accountCurrency} onChange={(e) => setAccountCurrency(e.target.value.toUpperCase())}
+          maxLength={3} placeholder={user.currency} style={{ width: '5.5rem' }}
+          title="Currency (leave as household currency, or a different code for a tracked foreign-currency account)"
+          aria-label="Currency"
+        />
+        {!isForeign && (
+          <>
+            <select
+              value={cadence} onChange={(e) => setCadence(e.target.value)}
+              aria-label="Pay cadence"
+              title="How often this account's pay periods repeat"
+            >
+              {CADENCES.map((c) => <option key={c} value={c}>{c}</option>)}
+            </select>
+            {cadence === 'custom' && (
+              <input
+                type="number" min="2" max="185" required
+                value={intervalDays} onChange={(e) => setIntervalDays(e.target.value)}
+                className="cell-input" style={{ width: '5rem' }}
+                aria-label="Days per period"
+                title="Days per period"
+              />
+            )}
+          </>
+        )}
+        <button className="btn btn-primary">Add account</button>
+      </form>
+      <p className="muted small">
+        An account in a different currency is tracked in that currency and stays outside period
+        budget math — no exchange-rate guessing.
+      </p>
+      {error && <p className="form-error" role="alert">{error}</p>}
+    </section>
+  );
+}
+
+// The three per-account destructive actions (delete transactions / reset
+// account / delete account), split out of the former single AccountsCard so
+// it can render in its own tab panel (Settings "Maintenance" tab), fenced
+// visually as a danger zone. Shares useAccounts() with BankAccountsCard
+// above rather than lifting state up: the two never render at the same time
+// (different Tabs panels — Tabs unmounts the inactive one), so there is no
+// duplicate concurrent fetch, and each keeps its own independent state.
+export function DangerZoneCard() {
+  const { user } = useAuth();
+  const { accounts, reload } = useAccounts();
+  const [deletingTxnsId, setDeletingTxnsId] = useState(null);
+  const [resetError, setResetError] = useState(null);
+  const [resetMessage, setResetMessage] = useState(null);
+  const [resettingId, setResettingId] = useState(null);
+  // Set when POST /accounts/:id/reset 400s because the chosen startedOn
+  // would predate/land on a closed period. Holds the account id and the
+  // startedOn already typed in, so the "reset anyway" retry (closedPeriods:
+  // 'confirm') doesn't make the user re-enter anything.
+  const [resetBlock, setResetBlock] = useState(null);
+  const [deleteError, setDeleteError] = useState(null);
+  const [deleteMessage, setDeleteMessage] = useState(null);
+  const [deletingAccountId, setDeletingAccountId] = useState(null);
+
+  if (!accounts) return null;
 
   // Tier 1 data reset: wipe every transaction sitting in this account's OPEN
   // pay periods (closed periods are the frozen audited record and are never
@@ -349,79 +440,8 @@ export default function AccountsCard() {
     }
   };
 
-  const total = accounts.reduce((s, a) => s + a.balanceCents, 0);
-
   return (
-    <>
-      <section className="card">
-      <h2>Bank accounts</h2>
-      <p className="muted small">
-        Balances and projections are tracked per account — use the switcher in the top bar to change
-        which one you're viewing, and set each category's account on the Categories page. The starting
-        balance is what the account held going into its <em>tracking from</em> date; categories on the
-        account default to that date. Net worth across all accounts is {fmtMoney(total, user.currency)}.
-        Archiving hides an account from pickers but keeps its history in the totals.
-      </p>
-      <table className="table">
-        <thead>
-          <tr>
-            <th>Name</th><th>Type</th><th className="num">Starting balance</th><th>Tracking from</th>
-            <th className="num">Current balance</th><th className="center">Default</th><th><span className="sr-only">Actions</span></th>
-          </tr>
-        </thead>
-        <tbody>
-          {accounts.map((a) => (
-            <AccountRow key={a.id} account={a} currency={user.currency} onPatch={patch} />
-          ))}
-        </tbody>
-      </table>
-      <form className="quick-add" onSubmit={add}>
-        <input value={name} onChange={(e) => setName(e.target.value)} placeholder="New account name" aria-label="New account name" required />
-        <select value={type} onChange={(e) => setType(e.target.value)} aria-label="New account type">
-          {TYPES.map((t) => <option key={t} value={t}>{t}</option>)}
-        </select>
-        <input value={starting} onChange={(e) => setStarting(e.target.value)} inputMode="decimal" placeholder="Starting balance" aria-label="Starting balance" />
-        <input
-          type="date" value={startedOn} onChange={(e) => setStartedOn(e.target.value)}
-          title="Tracking start — defaults to the current pay period"
-          aria-label="Tracking from"
-        />
-        <input
-          value={accountCurrency} onChange={(e) => setAccountCurrency(e.target.value.toUpperCase())}
-          maxLength={3} placeholder={user.currency} style={{ width: '5.5rem' }}
-          title="Currency (leave as household currency, or a different code for a tracked foreign-currency account)"
-          aria-label="Currency"
-        />
-        {!isForeign && (
-          <>
-            <select
-              value={cadence} onChange={(e) => setCadence(e.target.value)}
-              aria-label="Pay cadence"
-              title="How often this account's pay periods repeat"
-            >
-              {CADENCES.map((c) => <option key={c} value={c}>{c}</option>)}
-            </select>
-            {cadence === 'custom' && (
-              <input
-                type="number" min="2" max="185" required
-                value={intervalDays} onChange={(e) => setIntervalDays(e.target.value)}
-                className="cell-input" style={{ width: '5rem' }}
-                aria-label="Days per period"
-                title="Days per period"
-              />
-            )}
-          </>
-        )}
-        <button className="btn btn-primary">Add account</button>
-      </form>
-      <p className="muted small">
-        An account in a different currency is tracked in that currency and stays outside period
-        budget math — no exchange-rate guessing.
-      </p>
-      {error && <p className="form-error" role="alert">{error}</p>}
-      </section>
-
-      <section className="card">
+    <section className="card card-danger-zone grid-full">
       <h2>Danger zone</h2>
       <p className="muted small">
         Delete every transaction sitting in one account's open pay periods. Pay periods, categories
@@ -483,6 +503,5 @@ export default function AccountsCard() {
       {deleteError && <p className="form-error" role="alert">{deleteError}</p>}
       {deleteMessage && <p className="form-ok" role="status">{deleteMessage}</p>}
     </section>
-    </>
   );
 }

@@ -6,7 +6,7 @@ import {
   getLifecycle, getPeriodDetail, materializePeriodAfter, recalculateOpenPeriodActuals,
   recomputeLineItemActual, resolveAccountId, setAmountGoingForward,
 } from '../services/budget.js';
-import { addDays, periodBefore, periodContaining, todayISO } from '../services/schedule.js';
+import { nextPeriodAfter, periodBefore, todayISO } from '../services/schedule.js';
 
 const router = Router();
 
@@ -16,15 +16,28 @@ async function loadContext(req) {
   return { budget: req.budget, cfg };
 }
 
+// nav.nextStart/prevStart must never point at a phantom period that overlaps
+// a real one - which a raw periodBefore/periodContaining step can do after a
+// mid-history cadence change moves the schedule's grid (see
+// services/schedule.js's nextPeriodAfter for the full explanation). detail.entries
+// (from getPeriodDetail, stripped out below before responding) is
+// buildProjection's own forward walk for this account, which already applies
+// that clip at every step - reusing it here means nav simply follows the same
+// already-correct sequence instead of re-deriving it. Only fall back to a raw
+// schedule step at the ends of that walk: before its first entry (pre-history,
+// where there is no real period to protect against) or past its last entry
+// (beyond the 60-month projection horizon - not reachable via normal nav).
 function withNav(cfg, detail) {
+  const { entries, ...rest } = detail;
   const period = { start: detail.period.start, end: detail.period.end };
-  return {
-    ...detail,
-    nav: {
-      prevStart: periodBefore(cfg, period).start,
-      nextStart: periodContaining(cfg, addDays(period.end, 1)).start,
-    },
-  };
+  const idx = entries ? entries.findIndex((e) => e.start === period.start) : -1;
+  const nextStart = idx >= 0 && idx + 1 < entries.length
+    ? entries[idx + 1].start
+    : nextPeriodAfter(cfg, period).start;
+  const prevStart = idx > 0
+    ? entries[idx - 1].start
+    : periodBefore(cfg, period).start;
+  return { ...rest, nav: { prevStart, nextStart } };
 }
 
 // The lifecycle-current period: the earliest not-yet-closed one (which is
