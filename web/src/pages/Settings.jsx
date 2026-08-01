@@ -612,7 +612,11 @@ export default function Settings() {
 
   return (
     <div className="settings-page">
-      <Tabs defaultTab="general" tabs={tabs} />
+      <Tabs
+        defaultTab="general"
+        tabs={tabs}
+        trailing={<p className="tabs-version">Version {__APP_VERSION__}</p>}
+      />
     </div>
   );
 }

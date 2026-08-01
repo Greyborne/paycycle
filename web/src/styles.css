@@ -1205,12 +1205,26 @@ input.category-name:hover, input.category-name:focus { border-color: var(--borde
 
 /* ---------- tabs (reusable primitive, see components/Tabs.jsx) ---------- */
 
+.tabs-bar {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 1.1rem;
+}
+
 .tabs-list {
   display: flex;
   gap: 0.25rem;
-  border-bottom: 1px solid var(--border);
-  margin-bottom: 1.1rem;
   flex-wrap: wrap;
+}
+
+.tabs-version {
+  font-size: 0.75rem;
+  color: var(--muted);
+  white-space: nowrap;
 }
 
 .tabs-tab {

@@ -5,7 +5,11 @@ import React, { useId, useRef, useState } from 'react';
 // `tabs[].content` is any renderable node; only the active tab's panel stays
 // in the DOM/accessible flow. Arrow keys move + activate, Home/End jump to
 // the first/last tab, focus wraps at the ends.
-export default function Tabs({ tabs, defaultTab }) {
+// `trailing` is an optional renderable node shown to the right of the tab
+// strip (inside `.tabs-bar`, a sibling of the `role="tablist"` container) —
+// e.g. a version string. It's non-interactive and has no ARIA role; it must
+// never be placed inside the tablist itself.
+export default function Tabs({ tabs, defaultTab, trailing }) {
   const uid = useId();
   const [active, setActive] = useState(defaultTab ?? tabs[0]?.id);
   const tabRefs = useRef([]);
@@ -47,26 +51,29 @@ export default function Tabs({ tabs, defaultTab }) {
 
   return (
     <div className="tabs">
-      <div className="tabs-list" role="tablist" onKeyDown={handleKeyDown}>
-        {tabs.map((tab, i) => {
-          const selected = tab.id === active;
-          return (
-            <button
-              key={tab.id}
-              ref={(el) => { tabRefs.current[i] = el; }}
-              type="button"
-              role="tab"
-              id={tabId(tab.id)}
-              className={`tabs-tab${selected ? ' active' : ''}`}
-              aria-selected={selected}
-              aria-controls={panelId(tab.id)}
-              tabIndex={selected ? 0 : -1}
-              onClick={() => setActive(tab.id)}
-            >
-              {tab.label}
-            </button>
-          );
-        })}
+      <div className="tabs-bar">
+        <div className="tabs-list" role="tablist" onKeyDown={handleKeyDown}>
+          {tabs.map((tab, i) => {
+            const selected = tab.id === active;
+            return (
+              <button
+                key={tab.id}
+                ref={(el) => { tabRefs.current[i] = el; }}
+                type="button"
+                role="tab"
+                id={tabId(tab.id)}
+                className={`tabs-tab${selected ? ' active' : ''}`}
+                aria-selected={selected}
+                aria-controls={panelId(tab.id)}
+                tabIndex={selected ? 0 : -1}
+                onClick={() => setActive(tab.id)}
+              >
+                {tab.label}
+              </button>
+            );
+          })}
+        </div>
+        {trailing}
       </div>
       {tabs.map((tab) => {
         const selected = tab.id === active;

@@ -1,9 +1,11 @@
 # ---- frontend build ----
 FROM node:22-alpine AS webbuild
+ARG APP_VERSION=dev
 WORKDIR /build/web
 COPY web/package.json web/package-lock.json ./
 RUN npm ci --no-audit --no-fund
 COPY web/ ./
+ENV VITE_APP_VERSION=$APP_VERSION
 RUN npm run build
 
 # ---- runtime ----
