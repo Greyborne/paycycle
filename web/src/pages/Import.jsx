@@ -6,6 +6,7 @@ import { fmtMoney } from '../format.js';
 import { parseCSV, parseDateCell, parseAmountCell, suggestedRulePattern } from '../csv.js';
 import { useAccounts } from '../useAccounts.js';
 import BankSync from '../components/BankSync.jsx';
+import PossibleDuplicates from '../components/PossibleDuplicates.jsx';
 
 function guessColumn(header, patterns) {
   const lower = header.map((h) => h.toLowerCase());
@@ -138,6 +139,7 @@ export default function Import() {
   return (
     <div className="import-page">
       <BankSync />
+      <PossibleDuplicates />
 
       {step === 'paste' && <h2>Import a CSV statement</h2>}
       {step === 'paste' && (

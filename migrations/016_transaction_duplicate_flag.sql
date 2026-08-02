@@ -1,0 +1,15 @@
+-- Cross-source duplicate flag: manual entry, CSV import, and SimpleFIN bank
+-- sync each hash import_hash differently, so the same real-world purchase
+-- can land as two separate transaction rows (e.g. entered by hand, then
+-- pulled in again by bank sync). This column lets a later detection pass
+-- mark one transaction as a likely duplicate of another pre-existing one,
+-- without merging or deleting either row. NULL (the default) means "not
+-- flagged as a duplicate of anything" - the existing, unambiguous case for
+-- every current row. ON DELETE SET NULL so removing the original
+-- transaction a duplicate points to un-flags the duplicate rather than
+-- cascading the delete onto it.
+--
+-- Insert-time-only: this is intentionally forward-looking. No backfill is
+-- performed against existing rows, and no index is added yet - both are
+-- deferred to the detection feature itself, once its query shape is known.
+ALTER TABLE transactions ADD COLUMN possible_duplicate_of INTEGER REFERENCES transactions(id) ON DELETE SET NULL;

@@ -7,6 +7,7 @@ import {
   clearLineItemForTransaction, setAmountGoingForward, templateOwnsAccount,
 } from '../services/budget.js';
 import { loadRules, firstMatchingCategory } from '../services/rules.js';
+import { findPossibleDuplicate } from '../services/duplicates.js';
 
 const router = Router();
 
@@ -153,6 +154,26 @@ router.post('/commit', async (req, res, next) => {
         results.duplicates += 1;
         continue;
       }
+      const newTxnId = inserted[0].id;
+
+      // Exact import_hash dedup just found no match above - this is
+      // genuinely a new row. Check whether it looks like the same
+      // real-world purchase as a pre-existing transaction entered via a
+      // different source (manual entry, a different import, or bank sync);
+      // if so, flag it for manual review rather than silently duplicating
+      // the household's totals.
+      const possibleDuplicateOf = await findPossibleDuplicate(client, {
+        budgetId: req.budget.id,
+        accountId: account.id,
+        type,
+        amountCents: amount,
+        date: r.date,
+        excludeId: newTxnId,
+      });
+      if (possibleDuplicateOf) {
+        await client.query('UPDATE transactions SET possible_duplicate_of = $1 WHERE id = $2', [possibleDuplicateOf, newTxnId]);
+      }
+
       results.imported += 1;
       if (catId === null) results.needReview += 1;
       else if (categorizedBy === 'rule') results.autoCategorized += 1;

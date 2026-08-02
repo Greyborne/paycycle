@@ -9,6 +9,7 @@ import {
 } from './budget.js';
 import { decryptSecret, encryptSecret } from './secrets.js';
 import { loadRules, firstMatchingCategory } from './rules.js';
+import { findPossibleDuplicate } from './duplicates.js';
 import { HttpError } from '../validation.js';
 
 // ---------------------------------------------------------------------
@@ -472,6 +473,26 @@ async function insertSyncedTxn(clientDb, ctx, link, t, userId, results) {
     results.duplicates += 1;
     return;
   }
+  const newTxnId = inserted[0].id;
+
+  // The import_hash conflict check above just found no exact match - this
+  // is genuinely a new row. Check whether it looks like the same
+  // real-world purchase as a pre-existing transaction entered via a
+  // different source (manual entry, CSV import, or a different bank
+  // connection); if so, flag it for manual review rather than silently
+  // duplicating the household's totals.
+  const possibleDuplicateOf = await findPossibleDuplicate(clientDb, {
+    budgetId: budget.id,
+    accountId: link.account_id,
+    type: t.type,
+    amountCents: t.amountCents,
+    date: t.date,
+    excludeId: newTxnId,
+  });
+  if (possibleDuplicateOf) {
+    await clientDb.query('UPDATE transactions SET possible_duplicate_of = $1 WHERE id = $2', [possibleDuplicateOf, newTxnId]);
+  }
+
   results.added += 1;
   if (template && template.category_type === 'recurring') {
     const drift = driftFor(budget, template, t.amountCents, t.date);

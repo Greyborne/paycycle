@@ -6,6 +6,7 @@ import {
   clearLineItemForTransaction, recomputeLineItemActual, templateOwnsAccount,
 } from '../services/budget.js';
 import { loadRules, firstMatchingCategory } from '../services/rules.js';
+import { findPossibleDuplicate } from '../services/duplicates.js';
 import { todayISO } from '../services/schedule.js';
 
 const router = Router();
@@ -95,6 +96,24 @@ router.post('/', async (req, res, next) => {
          directCategoryId, directCategoryId ? 'manual' : null]
       );
       transaction = rows[0];
+
+      // A manual entry can be the SECOND leg of a duplicate just as easily
+      // as the first (e.g. bank sync already pulled this purchase in, and
+      // the user also enters it by hand) - run the same cross-source check
+      // the import/sync paths run, on this same DB transaction.
+      const possibleDuplicateOf = await findPossibleDuplicate(client, {
+        budgetId: req.budget.id,
+        accountId,
+        type,
+        amountCents: amount,
+        date,
+        excludeId: transaction.id,
+      });
+      if (possibleDuplicateOf) {
+        await client.query('UPDATE transactions SET possible_duplicate_of = $1 WHERE id = $2', [possibleDuplicateOf, transaction.id]);
+        transaction.possible_duplicate_of = possibleDuplicateOf;
+      }
+
       if (recurringTemplate) {
         // Same clearing path as categorizing an existing transaction: records
         // the actual and clears (or moves) the line item, and honors the same
@@ -193,6 +212,36 @@ router.get('/', async (req, res, next) => {
   }
 });
 
+// Unresolved possible-duplicate pairs (possible_duplicate_of IS NOT NULL),
+// for the "Possible duplicates" review UI. Optionally scoped to one account.
+// Each row is the FLAGGED transaction joined to the pre-existing ORIGINAL it
+// was matched against, so a client can render both sides of the pair without
+// a second round trip.
+router.get('/duplicates', async (req, res, next) => {
+  try {
+    const where = ['t.budget_id = $1', 't.possible_duplicate_of IS NOT NULL'];
+    const params = [req.budget.id];
+    if (req.query.account) {
+      params.push(Number(req.query.account));
+      where.push(`t.account_id = $${params.length}`);
+    }
+    const { rows } = await q(
+      `SELECT
+         t.id, t.date, t.description, t.type, t.amount_cents, t.account_id,
+         o.id AS original_id, o.date AS original_date, o.description AS original_description,
+         o.type AS original_type, o.amount_cents AS original_amount_cents
+       FROM transactions t
+       JOIN transactions o ON o.id = t.possible_duplicate_of
+       WHERE ${where.join(' AND ')}
+       ORDER BY t.date DESC, t.id DESC`,
+      params
+    );
+    res.json({ pairs: rows });
+  } catch (err) {
+    next(err);
+  }
+});
+
 // Categorize one transaction: tag categories just label it; recurring
 // categories also clear the period's matching line item and check the actual
 // amount against the plan (drift). Returns any drift suggestion so the UI
@@ -266,6 +315,26 @@ router.patch('/assign', async (req, res, next) => {
       if (d) drift.push(d);
     }
     res.json({ updated: txns.length, drift });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// Dismiss a possible-duplicate flag: this transaction is not actually a
+// duplicate of the one it was matched against. There is no separate
+// "dismissed" state - nulling possible_duplicate_of IS the dismiss action
+// (CONSTITUTION.md, 2026-08-01 decision). An unflagged row and a
+// reviewed-and-cleared row are indistinguishable afterward, which is
+// intentional: nothing is remembered about a false positive.
+router.patch('/:id/dismiss-duplicate', async (req, res, next) => {
+  try {
+    const id = requireId(req.params.id, 'transaction');
+    const { rows } = await q(
+      'UPDATE transactions SET possible_duplicate_of = NULL WHERE id = $1 AND budget_id = $2 RETURNING id',
+      [id, req.budget.id]
+    );
+    if (!rows.length) return res.status(404).json({ error: 'Transaction not found' });
+    res.status(204).end();
   } catch (err) {
     next(err);
   }

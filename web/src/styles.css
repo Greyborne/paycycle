@@ -768,6 +768,27 @@ input.category-name:hover, input.category-name:focus { border-color: var(--borde
 .import-page .table td { white-space: nowrap; }
 .import-page select { margin-top: 0; width: auto; }
 
+/* Possible-duplicates card (Import page): one bordered group per flagged
+   pair, matching the borrowed border/radius already used for a self-
+   contained sub-panel elsewhere (see .amount-editor). */
+.dupe-list { display: flex; flex-direction: column; gap: 0.85rem; margin-top: 0.75rem; }
+.dupe-pair {
+  border: 1px solid var(--border); border-radius: 12px; padding: 0.6rem 0.75rem 0.75rem;
+  /* Same Chromium scrollable-overflow leak documented on .period-table and
+     .settings-grid .card:has(.table-scroll): below ~420px this box's nested
+     .table-scroll table needs its own horizontal scroll, and once it does,
+     the overflow leaks past .table-scroll's own box through this flex
+     ancestor into .dupe-list/.card/<html>, growing the whole page's
+     scrollWidth — confirmed via getBoundingClientRect at 375/390/412px.
+     .dupe-pair is the direct bordered/padded wrapper around .table-scroll
+     here, structurally the same role .period-table plays, so it gets the
+     same fix. contain: layout stops the leak with no visual/paint effect,
+     no design-system value. */
+  contain: layout;
+}
+.dupe-pair .table { margin-top: 0; }
+.dupe-pair-actions { display: flex; justify-content: flex-end; margin-top: 0.5rem; }
+
 /* ---------- household ---------- */
 
 .invite-code {
