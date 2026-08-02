@@ -266,6 +266,17 @@ router.delete('/:id/transactions', async (req, res, next) => {
     for (const row of affected) {
       await recomputeLineItemActual(client, row.pay_period_id, row.category_template_id);
     }
+    // Clear last_synced_at on any SimpleFIN connection linked to this
+    // account so the next sync falls back to the earliest-mapped-period-start
+    // (or 90-day) window instead of resuming from the stale
+    // last_synced_at - 7 days cursor (server/services/simplefin.js
+    // startDateFor) - otherwise a reset account only gets ~a week of history
+    // back. No-op if this account has no SimpleFIN connection.
+    await client.query(
+      `UPDATE simplefin_connections SET last_synced_at = NULL
+       WHERE id IN (SELECT connection_id FROM simplefin_account_links WHERE account_id = $1)`,
+      [id]
+    );
     await client.query('COMMIT');
     res.json({ deleted });
   } catch (err) {
@@ -335,6 +346,17 @@ router.post('/:id/reset', async (req, res, next) => {
       [id]
     );
     await client.query('UPDATE accounts SET started_on = $1 WHERE id = $2', [startedOn, id]);
+    // Clear last_synced_at on any SimpleFIN connection linked to this
+    // account so the next sync falls back to the earliest-mapped-period-start
+    // (or 90-day) window instead of resuming from the stale
+    // last_synced_at - 7 days cursor (server/services/simplefin.js
+    // startDateFor) - otherwise a reset account only gets ~a week of history
+    // back. No-op if this account has no SimpleFIN connection.
+    await client.query(
+      `UPDATE simplefin_connections SET last_synced_at = NULL
+       WHERE id IN (SELECT connection_id FROM simplefin_account_links WHERE account_id = $1)`,
+      [id]
+    );
     await client.query('COMMIT');
     res.json({ deletedTransactions, deletedPeriods, startedOn });
   } catch (err) {
