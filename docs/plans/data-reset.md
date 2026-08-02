@@ -1,6 +1,6 @@
 # Build spec — per-account data reset & account delete
 
-Status: **not started** — plan only, awaiting boss sign-off before staffing.
+Status: **Tier 1 & 2 shipped**; Tier 3 built but unverified this session.
 
 ## Context
 

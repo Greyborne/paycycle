@@ -343,6 +343,76 @@ against the actual current HEAD/working-tree state plus reasoning about
 which hunks are this task's own, over relying on a same-session sibling
 agent's leftover file whose provenance isn't self-evident.
 
+- **2026-08-01 — SimpleFIN last_synced_at must be cleared on account
+  transaction resets; cross-source duplicate flagging added.** Two related
+  standing decisions ahead of this session's build (fixing the confirmed
+  gaps in [[paycycle-data-reset-simplefin-gap]] and
+  [[paycycle-cross-source-duplicate-gap]] memory, both verified in code
+  2026-07-28/2026-08-01).
+
+  **A. Data-reset routes must reset SimpleFIN sync state.** Tier 1
+  (`DELETE /accounts/:id/transactions`) and Tier 2 (`POST /accounts/:id/reset`,
+  `server/routes/accounts.js`) delete open-period transactions but never
+  touched `simplefin_connections.last_synced_at`, so a post-reset sync only
+  re-pulled a `last_synced_at - 7 days` window (`server/services/simplefin.js`
+  `startDateFor`), not the account's real history. **Fix:** both routes must,
+  in the same DB transaction as the delete, find every `simplefin_connections`
+  row reachable via `simplefin_account_links` for the affected account and set
+  `last_synced_at = NULL`, so the next sync falls through to the
+  earliest-mapped-period-start (or 90-day) fallback instead of the stale
+  7-day window. A connection shared with another, non-reset account is safe
+  to touch this way — that account's already-imported transactions still
+  carry their own `import_hash` and will simply be re-matched, not
+  duplicated, by the wider re-fetch. security-checker required (touches the
+  destructive account-reset surface, §3). Data-migration-style check from §6
+  applies: verify on an isolated ephemeral DB that (a) unaffected
+  accounts'/connections' `last_synced_at` are untouched, (b) a reset account's
+  mapped connection(s) are nulled, (c) re-running a reset when there is no
+  SimpleFIN connection at all is a no-op, not an error.
+
+  **B. Cross-source duplicate detection — flag for manual review, never
+  auto-delete or auto-merge.** Manual entry, CSV import, and SimpleFIN sync
+  each hash `import_hash` differently (or not at all), so the same real-world
+  transaction entered via two paths creates two rows with no existing
+  cross-check. Decided with the user 2026-08-01: **flag, don't auto-resolve.**
+  - **Matching heuristic:** two transactions in the same `account_id` are a
+    "possible duplicate" pair when they have the same `type`, the same
+    `amount_cents`, dates within **±3 days** of each other, and are not
+    already linked by an identical `import_hash` (that case is the existing
+    same-source dedup and is unaffected). Description is *not* a match
+    condition — manual descriptions and raw bank strings for the same
+    purchase routinely don't resemble each other, so requiring similarity
+    would miss real duplicates; amount+date+type is the deliberate
+    trade-off, accepting that two genuinely separate same-amount, same-week
+    transactions may get flagged (a review, not a deletion, is the intended
+    outcome for that case).
+  - **Schema:** new nullable `transactions.possible_duplicate_of INTEGER
+    REFERENCES transactions(id) ON DELETE SET NULL`. No new table. A flag is
+    set once, at insert time, pointing at the pre-existing row it matched;
+    detection is not re-run retroactively on historical data in this phase.
+  - **Detection sites:** CSV import commit (`server/routes/import.js`) and
+    SimpleFIN sync insert (`server/services/simplefin.js` `insertSyncedTxn`)
+    both run the same shared match query, on the same connection/transaction
+    as the insert, right after the existing `import_hash` check finds no
+    exact match. Manual quick-add (`server/routes/transactions.js`
+    `POST /`) also runs it — a manual entry can be the *second* leg of a
+    duplicate just as easily as the first.
+  - **Resolution is non-destructive by construction:** "dismiss" simply
+    nulls `possible_duplicate_of` on the flagged row (there is no separate
+    dismissed-state column — an unflagged row and a reviewed-and-cleared row
+    are indistinguishable, which is correct: nothing is remembered about a
+    false positive). Deleting one of the two transactions through the
+    existing delete path naturally resolves the pair via the FK's
+    `ON DELETE SET NULL` — no special-case code needed.
+  - **UI:** a new "Possible duplicates" card on the Import page
+    (`web/src/pages/Import.jsx`), scoped to the selected account, shown only
+    when unresolved flags exist for that account. Each pair renders both
+    transactions' date/amount/description side by side with "Not a
+    duplicate" (dismiss) and each side's existing delete action (reused, not
+    duplicated). New interactive markup gets a full a11y-checker pass; new
+    copy gets content-worker/content-checker, not folded into the code task.
+  Boss-approved.
+
 ## 8. Sign-off & amendment
 This constitution is the standard until the boss explicitly revises it
 here, dated. A checker's FAIL is not overridden by a worker's — or the
