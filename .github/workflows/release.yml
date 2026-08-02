@@ -2,13 +2,18 @@ name: Release
 
 # Push a version tag to cut a release:
 #   git tag v0.2.0 && git push origin v0.2.0
-# This runs the tests, builds the amd64-only image (arm64 is not supported —
-# cross-arch emulation in CI hung, so arm64 was dropped as a deliberate
-# non-goal, not an oversight), pushes it to Docker Hub (as :<version>,
-# :<major>.<minor>, and :latest), syncs the Docker Hub repository
-# description from README.md so it can't drift from the repo, and creates
-# a GitHub Release. Requires DOCKERHUB_USERNAME and DOCKERHUB_TOKEN repo
-# secrets.
+#
+# This is a 4-job pipeline: `test` runs the test suite, `build` builds a
+# native, single-architecture image on each architecture's own GitHub-hosted
+# runner (linux/amd64 on ubuntu-latest, linux/arm64 on the free-for-public-repos
+# native ubuntu-24.04-arm runner — no QEMU emulation, which is what made
+# cross-arch builds hang for 2+ hours when this used to be a single job doing
+# `platforms: linux/amd64,linux/arm64` under emulation), `merge` combines the
+# two single-arch image digests into one multi-arch manifest and verifies both
+# platforms actually made it in, and `release` syncs the Docker Hub
+# description from README.md and creates the GitHub Release. See the job
+# definitions below for the exact steps of each stage. Requires
+# DOCKERHUB_USERNAME and DOCKERHUB_TOKEN repo secrets.
 
 on:
   push:
@@ -18,7 +23,7 @@ permissions:
   contents: write # create the GitHub Release
 
 jobs:
-  release:
+  test:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -30,6 +35,68 @@ jobs:
         run: npm ci
       - name: Run tests
         run: npm test
+
+  build:
+    needs: test
+    strategy:
+      matrix:
+        include:
+          - platform: linux/amd64
+            runner: ubuntu-latest
+          - platform: linux/arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: docker/setup-buildx-action@v4
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v4
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Compute platform pair for artifact naming
+        run: |
+          platform=${{ matrix.platform }}
+          echo "PLATFORM_PAIR=${platform//\//-}" >> "$GITHUB_ENV"
+
+      - name: Build and push image by digest
+        id: build
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          platforms: ${{ matrix.platform }}
+          build-args: |
+            APP_VERSION=${{ github.ref_name }}
+          outputs: type=image,name=${{ secrets.DOCKERHUB_USERNAME }}/paycycle,push-by-digest=true,name-canonical=true,push=true
+          cache-from: type=gha,scope=${{ matrix.platform }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.platform }}
+
+      - name: Export digest
+        run: |
+          mkdir -p /tmp/digests
+          digest="${{ steps.build.outputs.digest }}"
+          touch "/tmp/digests/${digest#sha256:}"
+
+      - name: Upload digest
+        uses: actions/upload-artifact@v4
+        with:
+          name: digests-${{ env.PLATFORM_PAIR }}
+          path: /tmp/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  merge:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download digests
+        uses: actions/download-artifact@v4
+        with:
+          pattern: digests-*
+          path: /tmp/digests
+          merge-multiple: true
 
       - uses: docker/setup-buildx-action@v4
       - name: Log in to Docker Hub
@@ -48,18 +115,28 @@ jobs:
             type=semver,pattern={{major}}.{{minor}}
             type=raw,value=latest
 
-      - name: Build and push image
-        uses: docker/build-push-action@v7
-        with:
-          context: .
-          platforms: linux/amd64
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          build-args: |
-            APP_VERSION=${{ github.ref_name }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+      - name: Create manifest list and push
+        working-directory: /tmp/digests
+        run: |
+          docker buildx imagetools create \
+            $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
+            $(printf '${{ secrets.DOCKERHUB_USERNAME }}/paycycle@sha256:%s ' *)
+
+      - name: Verify multi-arch manifest contains both platforms
+        run: |
+          set -euo pipefail
+          tag="${{ secrets.DOCKERHUB_USERNAME }}/paycycle:${{ steps.meta.outputs.version }}"
+          docker buildx imagetools inspect "$tag"
+          platforms="$(docker buildx imagetools inspect "$tag" --raw | jq -r '.manifests[].platform | "\(.os)/\(.architecture)"')"
+          echo "Platforms present in manifest: $platforms"
+          echo "$platforms" | grep -qx "linux/amd64" || { echo "::error::linux/amd64 is missing from the pushed manifest"; exit 1; }
+          echo "$platforms" | grep -qx "linux/arm64" || { echo "::error::linux/arm64 is missing from the pushed manifest"; exit 1; }
+
+  release:
+    needs: merge
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
 
       - name: Sync Docker Hub description from README
         # Keeps the Docker Hub overview from drifting out of sync with the
