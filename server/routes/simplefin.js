@@ -102,10 +102,12 @@ router.post('/claim', async (req, res, next) => {
 // Map a bank account to one of ours (base currency only), or null to stop
 // syncing it.
 router.patch('/links/:id', async (req, res, next) => {
+  const client = await pool.connect();
   try {
     const id = requireId(req.params.id, 'bank account');
     const { rows: link } = await q(
-      `SELECT l.id FROM simplefin_account_links l JOIN simplefin_connections c ON c.id = l.connection_id
+      `SELECT l.id, l.connection_id, l.account_id FROM simplefin_account_links l
+       JOIN simplefin_connections c ON c.id = l.connection_id
        WHERE l.id = $1 AND c.budget_id = $2`,
       [id, req.budget.id]
     );
@@ -119,10 +121,28 @@ router.patch('/links/:id', async (req, res, next) => {
       if (!acct.length) bad('Bank accounts can only sync into active household-currency accounts');
       accountId = req.body.accountId;
     }
-    await q('UPDATE simplefin_account_links SET account_id = $1 WHERE id = $2', [accountId, id]);
+    // A remap onto a new account (unmapped -> mapped, or mapped -> a
+    // different account) must reset the connection's sync cursor so the
+    // newly-mapped account's first sync pulls real history instead of
+    // inheriting a cursor already advanced by syncing sibling accounts on
+    // this connection. Unmapping (accountId -> null) needs no reset.
+    const shouldResetSync = accountId !== null && accountId !== link[0].account_id;
+
+    await client.query('BEGIN');
+    await client.query('UPDATE simplefin_account_links SET account_id = $1 WHERE id = $2', [accountId, id]);
+    if (shouldResetSync) {
+      await client.query(
+        'UPDATE simplefin_connections SET last_synced_at = NULL WHERE id = $1',
+        [link[0].connection_id]
+      );
+    }
+    await client.query('COMMIT');
     res.json({ ok: true });
   } catch (err) {
+    await client.query('ROLLBACK').catch(() => {});
     next(err);
+  } finally {
+    client.release();
   }
 });
 

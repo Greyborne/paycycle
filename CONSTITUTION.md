@@ -413,6 +413,28 @@ agent's leftover file whose provenance isn't self-evident.
     copy gets content-worker/content-checker, not folded into the code task.
   Boss-approved.
 
+- **2026-08-02 — Mapping a new SimpleFIN account link must also reset
+  `last_synced_at`.** Third trigger for the same class of bug as the
+  2026-08-01 entry A fix (destructive account resets): `PATCH
+  /simplefin/links/:id` (`server/routes/simplefin.js`) sets a link's
+  `account_id` but never touches `simplefin_connections.last_synced_at`,
+  so a newly-mapped account inherits the connection's already-advanced
+  sync cursor and only ever gets ~7 days of backfill on its first sync
+  instead of real history — confirmed live in prod (a real Azura Credit
+  Union account mapped after the connection had already been syncing
+  Bank of America for a while; first sync captured 11 transactions from
+  a narrow recent window, all subsequent syncs correctly report "0 new,
+  11 already imported" because there's nothing newer, not because
+  anything is broken). **Fix:** whenever the PATCH results in
+  `account_id` becoming a new non-null value (unmapped → mapped, or
+  remapped to a different account), null `last_synced_at` on that link's
+  connection in the same transaction as the `account_id` update, so the
+  next sync falls through to the earliest-mapped-period-start/90-day
+  fallback for the whole connection. Safe for already-synced sibling
+  links on the same connection — the wider re-fetch just re-matches
+  existing `import_hash` rows, no duplicates. security-checker required
+  (touches sync-state on the same surface as entry A). Boss-approved.
+
 ## 8. Sign-off & amendment
 This constitution is the standard until the boss explicitly revises it
 here, dated. A checker's FAIL is not overridden by a worker's — or the
