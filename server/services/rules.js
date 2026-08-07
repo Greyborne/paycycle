@@ -35,9 +35,9 @@ export function ruleMatches(rule, txn) {
   return criteria > 0;
 }
 
-export function firstMatchingCategory(rules, txn) {
+export function firstMatchingCategory(rules, txn, isEligible = () => true) {
   for (const rule of rules) {
-    if (ruleMatches(rule, txn)) return rule.category_template_id;
+    if (ruleMatches(rule, txn) && isEligible(rule)) return rule.category_template_id;
   }
   return null;
 }

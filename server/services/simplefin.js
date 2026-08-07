@@ -437,21 +437,28 @@ async function insertSyncedTxn(clientDb, ctx, link, t, userId, results) {
   // amount, exactly like a confirmed CSV row; a tag match just labels it.
   // In a CLOSED (frozen) period a recurring match is left uncategorized for
   // review instead - reconciliation there requires reopening.
-  let categoryId = firstMatchingCategory(ctx.rules, {
+  const txnForMatch = {
     description: t.description,
     amountCents: t.amountCents,
     account: ctx.accountsById.get(link.account_id) || null,
-  });
-  let template = categoryId ? ctx.templatesById.get(categoryId) : null;
+  };
   // Same conflict as the manual rules-apply loop: a rule can match on
   // description/amount but resolve to a category owned by a DIFFERENT
   // account than the one this transaction actually posted to (e.g. two
   // linked accounts both have a "Rent" transaction, but only one owns the
-  // "Rent" category). Rather than falling through to another rule and
-  // risking an unrelated category assignment, leave it uncategorized for
-  // manual review - consistent with the closed-period conflict just below.
-  if (template && !templateOwnsAccount(template, link.account_id, ctx.defaultAccountId)) {
-    template = null;
+  // "Rent" category). Search same-account-eligible rules first (in their
+  // existing relative order) so an earlier, unrelated-account rule that also
+  // matches by text can't shadow a correctly scoped rule sitting later in
+  // the list. Only if NO same-account rule matches do we run a second,
+  // diagnostic-only search to count it as "other account" rather than "no
+  // rule matched" - that second search's result is never applied.
+  const ownsAccount = (rule) => {
+    const t2 = ctx.templatesById.get(rule.category_template_id);
+    return t2 && templateOwnsAccount(t2, link.account_id, ctx.defaultAccountId);
+  };
+  let categoryId = firstMatchingCategory(ctx.rules, txnForMatch, ownsAccount);
+  let template = categoryId ? ctx.templatesById.get(categoryId) : null;
+  if (!template && firstMatchingCategory(ctx.rules, txnForMatch)) {
     results.otherAccount += 1;
   }
   if (template && periodClosed && template.category_type === 'recurring') {

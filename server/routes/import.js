@@ -63,17 +63,18 @@ router.post('/preview', async (req, res, next) => {
       const key = dedupKey(r);
       // Every row in a statement import shares the same account, so a rule
       // that matches but resolves to a category owned by a DIFFERENT
-      // account is not a valid suggestion here - leave it unsuggested rather
-      // than propose a category the row can never actually be assigned to.
-      let suggested = firstMatchingCategory(rules, {
+      // account is not a valid suggestion here. Search only same-account-
+      // eligible rules (in their existing relative order) so an earlier,
+      // unrelated-account rule that also matches by text can't shadow a
+      // correctly scoped rule sitting later in the list.
+      const suggested = firstMatchingCategory(rules, {
         description: r.description,
         amountCents: r.amountCents,
         account,
+      }, (rule) => {
+        const t = templatesById.get(rule.category_template_id);
+        return t && templateOwnsAccount(t, account.id, defaultAccountId);
       });
-      const suggestedTemplate = suggested ? templatesById.get(suggested) : null;
-      if (suggestedTemplate && !templateOwnsAccount(suggestedTemplate, account.id, defaultAccountId)) {
-        suggested = null;
-      }
       const duplicate = seen.has(key);
       seen.add(key); // also catches duplicates within the same file
       return {

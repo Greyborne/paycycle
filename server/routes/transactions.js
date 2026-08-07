@@ -502,26 +502,31 @@ router.post('/recategorize', async (req, res, next) => {
     let skippedOtherAccount = 0;
     const drift = [];
     for (const txn of txns) {
-      const categoryId = firstMatchingCategory(rules, {
+      const txnForMatch = {
         description: txn.description,
         amountCents: txn.amount_cents,
         account: accountsById.get(txn.account_id) || null,
-      });
-      if (!categoryId) continue;
-      const template = templatesById.get(categoryId);
+      };
       // A rule can match on description/amount/account text but still resolve
       // to a category owned by a DIFFERENT account than the transaction's own
       // (e.g. two accounts both have a transaction named "Rent", but only one
-      // owns the "Rent" category). Rather than silently falling through to
-      // the next matching rule - which could assign some other, unrelated
-      // category the user never intended for this transaction - we leave it
-      // uncategorized for manual review. This mirrors the existing
-      // closed-period behavior below: a structural conflict during automatic
-      // rule application leaves the transaction alone rather than guessing.
-      if (template && !templateOwnsAccount(template, txn.account_id, defaultAccountId)) {
-        skippedOtherAccount += 1;
+      // owns the "Rent" category). Search same-account-eligible rules first
+      // (in their existing relative order) so an earlier, unrelated-account
+      // rule that happens to also match by text doesn't block a correctly
+      // scoped rule sitting later in the list from ever being reached. Only
+      // if NO same-account rule matches do we run a second, diagnostic-only
+      // search to tell "skipped: wrong account" apart from "no rule matched
+      // at all" - that second search's result is never applied.
+      const ownsAccount = (rule) => {
+        const t = templatesById.get(rule.category_template_id);
+        return t && templateOwnsAccount(t, txn.account_id, defaultAccountId);
+      };
+      const categoryId = firstMatchingCategory(rules, txnForMatch, ownsAccount);
+      if (!categoryId) {
+        if (firstMatchingCategory(rules, txnForMatch)) skippedOtherAccount += 1;
         continue;
       }
+      const template = templatesById.get(categoryId);
       if (txn.period_closed && template?.category_type === 'recurring') {
         skippedClosed += 1;
         continue;
