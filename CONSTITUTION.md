@@ -435,6 +435,103 @@ agent's leftover file whose provenance isn't self-evident.
   existing `import_hash` rows, no duplicates. security-checker required
   (touches sync-state on the same surface as entry A). Boss-approved.
 
+- **2026-08-04 — Manual period reassignment (adjacent-only), derived "moved"
+  badge, and recurring-match auto-detect.** Standing decisions ahead of the
+  period-reassignment build (user report: an early-holiday paycheck posts a
+  day before its period starts and files under the wrong period — e.g. two
+  paychecks show in the June 18 period and none in the July 2 period, even
+  though the household total is unaffected). Facts verified in code this
+  session, now binding:
+
+  - **No new column for the "moved" indicator.** `transactions.pay_period_id`
+    (`server/services/budget.js:965`, set at insert per
+    `transactions.js:70-96`) is the sole source of period membership
+    everywhere — `getPeriodDetail`, every recompute function, and the list
+    route key off it directly; no other cache/derived table exists. Today a
+    row's `pay_period_id` range always contains its `date`, except via the
+    SimpleFIN bank-date-revision path (`simplefin.js:558-627`), which keeps
+    both in sync when it moves one. Once this feature ships, any row where
+    `date` falls outside its `pay_period_id`'s `[start_date, end_date]` is,
+    by construction, a manual override — so the "moved" badge is **derived**
+    at read time (`t.date < pp.start_date OR t.date > pp.end_date`), not
+    stored. Avoids a migration for a purely informational flag.
+  - **Adjacent-only, enforced server-side.** The new move endpoint accepts
+    only the immediately previous or next `pay_periods` row for the same
+    `account_id`/`budget_id` (by `start_date` ordering) — never an arbitrary
+    target period ID supplied by the client.
+  - **Closed periods: no new exception.** A period on either side of the
+    move (source or destination) that is closed blocks the move with an
+    error telling the user to reopen first — same invariant as every other
+    edit (§5). Deliberately **not** relaxed, even though it means a target
+    period can only be reopened if it's the single most-recently-closed one
+    (`periods.js:298-300`'s existing constraint) — moving into an older
+    closed period stays impossible until that separate constraint is
+    revisited, which is out of scope here.
+  - **Recompute is dual-sided.** A move updates `pay_period_id` then calls
+    `recomputeLineItemActual` for **both** the source and destination
+    `(period, category_template_id)` pairs, inside one DB transaction —
+    following the exact pattern already used by the SimpleFIN
+    date-restatement path (`simplefin.js:621-624`) and transaction delete
+    (`transactions.js:161-163`).
+  - **Auto-detect heuristic is recurrence-type-specific.** The user asked for
+    "match against expected recurring amount/day"; code trace found
+    `due_day` only exists for `monthly`-recurrence templates
+    (`category_templates.due_day`, `migrations/001_init.sql:56-71`) —
+    `every_period` templates (the common shape for a paycheck matched once
+    per pay period) have no day-of-month concept at all. Adapted:
+    - **`monthly` recurrence:** suggest a move when the transaction's `date`
+      is within a small tolerance of `due_day` **and** lands nearer that day
+      in the adjacent period than in the one it's actually filed under.
+    - **`every_period` recurrence:** suggest a move when the transaction's
+      own period already has **another** cleared transaction for the same
+      `category_template_id` (the double-pay signature) while the adjacent
+      period has **none** for that template — this directly matches the
+      reported symptom and needs no due-day concept.
+    - Surfaced as a `suggestions` array on the existing `PATCH /assign`
+      response (`transactions.js` ~294-321), not a new endpoint — an array,
+      not a singular field, because `/assign` is bulk (`body.ids`) and more
+      than one transaction in a single call can independently trigger a
+      suggestion. **Corrected 2026-08-04, mid-build (Task 2):** this entry
+      originally said a singular `suggestMove` field; the worker
+      implementing Task 2 correctly flagged that a bulk endpoint can't be
+      represented by one field and built `{ transactionId, direction,
+      reason }[]` instead, surfacing the mismatch rather than silently
+      picking one. Boss ruling: the array is correct, the original wording
+      here was the error — fixed in place. The suggestion is ephemeral (not
+      persisted or dismissal-tracked) — the frontend acts on it immediately
+      or it's gone.
+  - **UI scope: `Transactions.jsx` only for this build.** The per-row move
+    actions and the moved badge land on the main Transactions list
+    (`web/src/pages/Transactions.jsx`), which already carries per-row period
+    linkage (`period_start`, `Transactions.jsx:366-373`) and the only
+    existing `.badge` precedent on a transaction row
+    (`txn-prov-${provClass}`, `Transactions.jsx:391`).
+    `PeriodDetail.jsx`'s "Unplanned transactions" table is **not** touched in
+    this build — narrower (unplanned-only) view; extending it is a follow-up
+    if wanted, not bundled in here.
+  - Both new/changed backend surfaces (move endpoint, `suggestMove` addition
+    to assign) get **security-checker** in addition to build-checker (§3 —
+    new/changed routes touching financial data). Both frontend tasks touch
+    user-facing markup on an existing table and get **a11y-checker** +
+    **design-checker** in addition to build-checker. Boss-approved.
+
+- **2026-08-04 — Boss missed the standing content-checker-attachment rule on
+  Task 3 of the period-reassignment build; caught and closed same-session.**
+  Task 3 (`Transactions.jsx` move actions + moved badge) added new copy
+  (button aria-labels, badge text/title, success notice) to a file that
+  already carries protected copy, which the 2026-07-26 rule below requires a
+  content-checker verbatim sweep for on top of the type-matched checkers —
+  the boss dispatched build/a11y/design-checker but forgot content-checker at
+  the time. Surfaced when Task 4's content-checker, reviewing a different
+  file, flagged the specific strings it hadn't been asked to verify as
+  "should be confirmed as boss-specified." Ruling: real process miss, no
+  content defect found once checked — a retroactive content-checker sweep
+  against commit `8b31425` confirmed all 6 new copy items match the
+  boss-specified text exactly (including the em dash and angle-quote glyphs)
+  and zero pre-existing strings were altered. No rule change needed (the
+  2026-07-26 rule already covers this correctly); logged as a reminder that
+  the boss is not exempt from its own dispatch checklist. Boss-approved.
+
 ## 8. Sign-off & amendment
 This constitution is the standard until the boss explicitly revises it
 here, dated. A checker's FAIL is not overridden by a worker's — or the

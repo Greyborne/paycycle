@@ -9,7 +9,7 @@
 
 import { pool, q } from '../db.js';
 import {
-  addDays, addMonths, monthlyOccurrences, nextPeriodAfter, periodAfter, periodBefore, periodContaining, todayISO,
+  addDays, addMonths, daysBetween, monthlyOccurrences, nextPeriodAfter, periodAfter, periodBefore, periodContaining, todayISO,
 } from './schedule.js';
 
 export async function getUser(userId) {
@@ -229,6 +229,105 @@ export function driftFor(budget, template, amountCents, date) {
   const threshold = Math.max(budget.drift_threshold_cents ?? 500, Math.round(planned * 0.05));
   if (Math.abs(actual - planned) <= threshold) return null;
   return { categoryTemplateId: template.id, name: template.name, plannedCents: planned, actualCents: actual, date };
+}
+
+// Read-only "does this manual assignment actually belong in the adjacent
+// period" check, run when a transaction is assigned to a RECURRING category
+// (server/routes/transactions.js PATCH /assign). Never mutates anything -
+// Task 1's PATCH /:id/move (same file) is the only path that actually moves
+// a transaction; this only surfaces a suggestion in the response for the
+// user to act on. Two heuristics split by template.recurrence, per
+// CONSTITUTION.md's 2026-08-04 "recurring-match auto-detect" decision:
+//   - every_period (no due-day concept, e.g. a paycheck): "double-pay"
+//     signature near a period boundary - the transaction's OWN period
+//     already has >=2 transactions for this template while the adjacent
+//     period (in the direction its date sits nearest the boundary) has none.
+//   - monthly (has due_day): nearest-occurrence-day comparison - suggest
+//     whichever adjacent period's due_day occurrence sits strictly closer to
+//     the transaction's actual date than its own period's occurrence
+//     (treating "no occurrence in its own period at all" as infinitely far),
+//     within a 3-day tolerance.
+// `db` is a pg Pool/Client-shaped object ({ query(text, params) }) - a plain
+// read, never wrapped in the caller's write transaction. `periodBounds` is
+// the { id, account_id, budget_id, start_date, end_date } row for
+// txn.pay_period_id, loaded by the caller (PATCH /assign batches this once
+// per request rather than once per transaction). Returns null, or
+// { transactionId, direction: 'prev'|'next', reason }.
+export async function detectMoveSuggestion(db, template, txn, periodBounds) {
+  if (!template || template.category_type !== 'recurring' || !periodBounds) return null;
+
+  // Adjacent = the next/previous pay_periods row for the SAME account and
+  // budget, ordered by start_date - identical lookup to Task 1's
+  // PATCH /:id/move above, for suggestion purposes only (no write).
+  const adjacentPeriod = async (direction) => {
+    const sql = direction === 'next'
+      ? `SELECT id, start_date, end_date FROM pay_periods WHERE account_id = $1 AND budget_id = $2 AND start_date > $3 ORDER BY start_date ASC LIMIT 1`
+      : `SELECT id, start_date, end_date FROM pay_periods WHERE account_id = $1 AND budget_id = $2 AND start_date < $3 ORDER BY start_date DESC LIMIT 1`;
+    const { rows } = await db.query(sql, [periodBounds.account_id, periodBounds.budget_id, periodBounds.start_date]);
+    return rows[0] || null;
+  };
+
+  const countForTemplate = async (periodId) => {
+    const { rows } = await db.query(
+      'SELECT COUNT(*)::int AS cnt FROM transactions WHERE pay_period_id = $1 AND category_template_id = $2',
+      [periodId, template.id]
+    );
+    return rows[0].cnt;
+  };
+
+  if (template.recurrence === 'every_period') {
+    const daysToEnd = daysBetween(txn.date, periodBounds.end_date);
+    const daysToStart = daysBetween(periodBounds.start_date, txn.date);
+    let direction = null;
+    if (daysToEnd <= 3) direction = 'next';
+    else if (daysToStart <= 3) direction = 'prev';
+    if (!direction) return null; // not near a boundary
+
+    const adjacent = await adjacentPeriod(direction);
+    if (!adjacent) return null; // no period in that direction to suggest
+
+    const countCurrent = await countForTemplate(periodBounds.id);
+    const countAdjacent = await countForTemplate(adjacent.id);
+    if (countCurrent >= 2 && countAdjacent === 0) {
+      return {
+        transactionId: txn.id,
+        direction,
+        reason: `This period already has ${countCurrent} transactions for ${template.name}; the ${direction} period has none.`,
+      };
+    }
+    return null;
+  }
+
+  if (template.recurrence === 'monthly' && template.due_day) {
+    // Smallest absolute day-distance from txn.date to any due_day occurrence
+    // within the given period's bounds, or null if the period has no
+    // occurrence of that day-of-month at all.
+    const nearestDiff = (bounds) => {
+      const occurrences = monthlyOccurrences(template.due_day, bounds.start_date, bounds.end_date);
+      if (!occurrences.length) return null;
+      return Math.min(...occurrences.map((d) => Math.abs(daysBetween(txn.date, d))));
+    };
+    const diffCurrent = nearestDiff(periodBounds) ?? Infinity;
+
+    let best = null;
+    for (const direction of ['prev', 'next']) {
+      const adjacent = await adjacentPeriod(direction);
+      if (!adjacent) continue;
+      const diffAdjacent = nearestDiff(adjacent);
+      if (diffAdjacent === null) continue; // adjacent period has no due_day occurrence either
+      if (diffAdjacent <= 3 && diffAdjacent < diffCurrent && (!best || diffAdjacent < best.diffAdjacent)) {
+        best = { direction, diffAdjacent };
+      }
+    }
+    if (!best) return null;
+    return {
+      transactionId: txn.id,
+      direction: best.direction,
+      reason: `${template.name} is due on day ${template.due_day}; this transaction posted ${best.diffAdjacent} day(s) from that date in the ${best.direction} period, closer than in its own.`,
+    };
+  }
+
+  return null;
 }
 
 // The actual amount a line item's `cleared_amount_cents` should carry: the

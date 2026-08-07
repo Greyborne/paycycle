@@ -3,7 +3,7 @@ import { pool, q } from '../db.js';
 import { bad, requireCents, requireDate, requireId } from '../validation.js';
 import {
   getConfig, ensureMaterialized, getDefaultAccountId, loadTemplates, driftFor,
-  clearLineItemForTransaction, recomputeLineItemActual, templateOwnsAccount,
+  clearLineItemForTransaction, recomputeLineItemActual, templateOwnsAccount, detectMoveSuggestion,
 } from '../services/budget.js';
 import { loadRules, firstMatchingCategory } from '../services/rules.js';
 import { findPossibleDuplicate } from '../services/duplicates.js';
@@ -194,6 +194,7 @@ router.get('/', async (req, res, next) => {
               t.account_id, ct.name AS category_name, ct.category_type,
               a.name AS account_name, a.currency AS account_currency,
               pp.start_date AS period_start, (pp.closed_at IS NOT NULL) AS period_closed,
+              (pp.start_date IS NOT NULL AND (t.date < pp.start_date OR t.date > pp.end_date)) AS period_overridden,
               li.cleared AS line_item_cleared
        FROM transactions t
        LEFT JOIN category_templates ct ON ct.id = t.category_template_id
@@ -309,12 +310,38 @@ router.patch('/assign', async (req, res, next) => {
     const templatesById = new Map(
       (await loadTemplates(req.budget.id, { includeArchived: true })).map((t) => [t.id, t])
     );
+    const template = categoryId ? templatesById.get(categoryId) : null;
+
+    // Adjacent-period move suggestions (CONSTITUTION.md, 2026-08-04
+    // "recurring-match auto-detect" decision) only apply to a recurring-
+    // category assignment, and need each affected transaction's CURRENT
+    // period bounds up front. One batched query covers every distinct
+    // pay_period_id in this request rather than one query per transaction -
+    // detectMoveSuggestion (server/services/budget.js) itself never mutates
+    // anything, it only reads.
+    let periodsById = new Map();
+    if (template?.category_type === 'recurring') {
+      const periodIds = [...new Set(txns.map((t) => t.pay_period_id).filter((id) => id != null))];
+      if (periodIds.length) {
+        const { rows: periods } = await q(
+          'SELECT id, account_id, budget_id, start_date, end_date FROM pay_periods WHERE id = ANY($1)',
+          [periodIds]
+        );
+        periodsById = new Map(periods.map((p) => [p.id, p]));
+      }
+    }
+
     const drift = [];
+    const suggestions = [];
     for (const txn of txns) {
       const d = await assignCategory(req.budget, templatesById, txn, categoryId, 'manual');
       if (d) drift.push(d);
+      if (template?.category_type === 'recurring') {
+        const suggestion = await detectMoveSuggestion(pool, template, txn, periodsById.get(txn.pay_period_id));
+        if (suggestion) suggestions.push(suggestion);
+      }
     }
-    res.json({ updated: txns.length, drift });
+    res.json({ updated: txns.length, drift, suggestions });
   } catch (err) {
     next(err);
   }
@@ -335,6 +362,76 @@ router.patch('/:id/dismiss-duplicate', async (req, res, next) => {
     );
     if (!rows.length) return res.status(404).json({ error: 'Transaction not found' });
     res.status(204).end();
+  } catch (err) {
+    next(err);
+  }
+});
+
+// Move a transaction to the immediately adjacent (previous or next) pay
+// period for its account, overriding the date-based period it was filed
+// under. transactions.date is NEVER touched here - only pay_period_id
+// moves. The "moved" state is derived at read time (t.date falling outside
+// its pay_period_id's [start_date, end_date] range - see the list route
+// above) rather than stored, per CONSTITUTION.md's 2026-08-04 decision.
+// Adjacent-only, enforced here: the client supplies only a direction, never
+// a target period id, so it can never jump to an arbitrary period. Either
+// side (source or destination) being closed blocks the move, with no new
+// exception to that invariant (§5).
+router.patch('/:id/move', async (req, res, next) => {
+  try {
+    const id = requireId(req.params.id, 'transaction');
+    const direction = req.body?.direction;
+    if (direction !== 'prev' && direction !== 'next') bad('direction must be "prev" or "next"');
+
+    const { rows } = await q(
+      `SELECT t.id, t.account_id, t.pay_period_id, t.category_template_id,
+              pp.start_date AS period_start, pp.closed_at
+       FROM transactions t
+       LEFT JOIN pay_periods pp ON pp.id = t.pay_period_id
+       WHERE t.id = $1 AND t.budget_id = $2`,
+      [id, req.budget.id]
+    );
+    if (!rows.length) return res.status(404).json({ error: 'Transaction not found' });
+    const txn = rows[0];
+    if (txn.closed_at) bad('That transaction is in a closed pay period — reopen it to move it');
+
+    // Adjacent = the next/previous pay_periods row for the SAME account and
+    // budget, ordered by start_date - never a client-supplied period id.
+    const adjacentSql = direction === 'next'
+      ? `SELECT id, closed_at FROM pay_periods WHERE account_id = $1 AND budget_id = $2 AND start_date > $3 ORDER BY start_date ASC LIMIT 1`
+      : `SELECT id, closed_at FROM pay_periods WHERE account_id = $1 AND budget_id = $2 AND start_date < $3 ORDER BY start_date DESC LIMIT 1`;
+    const { rows: adjacentRows } = await q(adjacentSql, [txn.account_id, req.budget.id, txn.period_start]);
+    if (!adjacentRows.length) bad('No period in that direction');
+    const target = adjacentRows[0];
+    if (target.closed_at) bad('The target period is closed — reopen it to move a transaction into it');
+
+    const oldPeriodId = txn.pay_period_id;
+    const client = await pool.connect();
+    let transaction;
+    try {
+      await client.query('BEGIN');
+      const { rows: updated } = await client.query(
+        'UPDATE transactions SET pay_period_id = $1 WHERE id = $2 RETURNING *',
+        [target.id, txn.id]
+      );
+      transaction = updated[0];
+      // Same dual-sided recompute as the SimpleFIN date-restatement path
+      // (simplefin.js:621-624) and transaction delete (above): the OLD
+      // period's line item lost this transaction's contribution, the NEW
+      // period's gained it. No-op for tag/uncategorized transactions - no
+      // line_item row matches either UPDATE.
+      if (txn.category_template_id) {
+        await recomputeLineItemActual(client, oldPeriodId, txn.category_template_id);
+        await recomputeLineItemActual(client, target.id, txn.category_template_id);
+      }
+      await client.query('COMMIT');
+    } catch (err) {
+      await client.query('ROLLBACK').catch(() => {});
+      throw err;
+    } finally {
+      client.release();
+    }
+    res.json({ transaction });
   } catch (err) {
     next(err);
   }

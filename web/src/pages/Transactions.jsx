@@ -6,6 +6,7 @@ import { fmtDate, fmtMoney } from '../format.js';
 import { useAccounts } from '../useAccounts.js';
 import { categoriesForAccount, categoriesForAccounts } from '../categoryScope.js';
 import DriftNotices from '../components/DriftNotices.jsx';
+import MoveSuggestions from '../components/MoveSuggestions.jsx';
 import RuleDrawer from '../components/RuleDrawer.jsx';
 import TransactionCreateDrawer from '../components/TransactionCreateDrawer.jsx';
 
@@ -98,6 +99,7 @@ export default function Transactions() {
   const [selected, setSelected] = useState(new Set());
   const [bulkCategory, setBulkCategory] = useState(null);
   const [drift, setDrift] = useState([]);
+  const [moveSuggestions, setMoveSuggestions] = useState([]);
   const [notice, setNotice] = useState(null);
   const [error, setError] = useState(null);
   const [ruleDrawerTxn, setRuleDrawerTxn] = useState(null);
@@ -159,6 +161,13 @@ export default function Transactions() {
     try {
       const res = await api('/transactions/assign', { method: 'PATCH', body: { ids, categoryId } });
       if (res.drift?.length) setDrift((d) => [...d, ...res.drift]);
+      if (res.suggestions?.length) {
+        const enriched = res.suggestions.map((s) => ({
+          ...s,
+          description: sorted.find((t) => t.id === s.transactionId)?.description,
+        }));
+        setMoveSuggestions((m) => [...m, ...enriched]);
+      }
       load();
     } catch (err) {
       setError(err.message);
@@ -218,6 +227,18 @@ export default function Transactions() {
     }));
   };
 
+  const moveTxn = async (id, direction) => {
+    try {
+      await api(`/transactions/${id}/move`, { method: 'PATCH', body: { direction } });
+      setNotice(direction === 'prev' ? 'Moved to the previous period' : 'Moved to the next period');
+      load();
+    } catch (err) {
+      setError(err.message);
+    }
+  };
+
+  const acceptSuggestion = (id, direction) => moveTxn(id, direction);
+
   const rerunRules = async () => {
     setNotice(null);
     const res = await api('/transactions/recategorize', { method: 'POST' });
@@ -265,6 +286,7 @@ export default function Transactions() {
       </div>
 
       <DriftNotices notices={drift} onChanged={load} />
+      <MoveSuggestions suggestions={moveSuggestions} onAccept={acceptSuggestion} />
       {notice && <p className="form-ok" ref={noticeRef} tabIndex={-1}>{notice}</p>}
 
       <section className="card">
@@ -333,11 +355,12 @@ export default function Transactions() {
                 <th className="sortable" onClick={() => clickSort('account')}>Account{arrow('account')}</th>
                 <th>Period</th>
                 <th />
+                <th><span className="sr-only">Actions</span></th>
               </tr>
             </thead>
             <tbody>
               {sorted.length === 0 && (
-                <tr><td colSpan={8} className="muted">No transactions match these filters.</td></tr>
+                <tr><td colSpan={9} className="muted">No transactions match these filters.</td></tr>
               )}
               {sorted.map((t) => {
                 const [provClass, provLabel] = provenance(t);
@@ -372,6 +395,14 @@ export default function Transactions() {
                           )}
                         </Link>
                       )}
+                      {t.period_overridden && (
+                        <span
+                          className="badge badge-moved"
+                          title="Filed here manually — its own date falls in a different period"
+                        >
+                          moved
+                        </span>
+                      )}
                     </td>
                     <td>
                       {provClass === 'uncat' ? (
@@ -390,6 +421,22 @@ export default function Transactions() {
                       ) : (
                         <span className={`badge txn-prov-${provClass}`}>{provLabel}</span>
                       )}
+                    </td>
+                    <td>
+                      <span className="txn-actions">
+                        <button
+                          type="button"
+                          className="btn btn-ghost btn-small"
+                          onClick={() => moveTxn(t.id, 'prev')}
+                          aria-label="Move to previous period"
+                        >‹</button>
+                        <button
+                          type="button"
+                          className="btn btn-ghost btn-small"
+                          onClick={() => moveTxn(t.id, 'next')}
+                          aria-label="Move to next period"
+                        >›</button>
+                      </span>
                     </td>
                   </tr>
                 );

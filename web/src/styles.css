@@ -762,6 +762,16 @@ input.category-name:hover, input.category-name:focus { border-color: var(--borde
 .table-scroll { overflow-x: auto; }
 .row-muted { opacity: 0.45; }
 
+/* Same Chromium scrollable-overflow leak documented on .period-table,
+   .settings-grid .card:has(.table-scroll), and .dupe-pair: below ~480px the
+   txn-table's Actions column (added for period-reassignment) widens the
+   table enough to need its own horizontal scroll, and once it does, the
+   overflow leaks past .table-scroll's own box through this card into the
+   page, growing document.documentElement.scrollWidth past the viewport —
+   confirmed via a real render at 375px. contain: layout stops the leak with
+   no visual/paint effect, no design-system value. */
+.transactions-page .card:has(.table-scroll) { contain: layout; }
+
 .report-controls { display: flex; gap: 1.25rem; align-items: flex-end; flex-wrap: wrap; margin-bottom: 0.5rem; }
 .report-controls label { margin: 0; }
 .report-table th, .report-table td { white-space: nowrap; padding: 0.35rem 0.45rem; font-size: 0.85rem; }
@@ -900,6 +910,15 @@ input.category-name:hover, input.category-name:focus { border-color: var(--borde
 .badge.txn-prov-btn { border: none; cursor: pointer; font: inherit; }
 .badge.txn-prov-btn:hover { filter: brightness(1.15); text-decoration: underline; }
 .badge.txn-prov-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+/* Informational marker: a transaction's own date falls outside the period
+   it's filed under (manually moved via the Actions column) - a settled fact,
+   not a live problem, so it uses the neutral --health-none pair (same as
+   .badge.txn-prov-manual on this page and the Closed/Projected period-status
+   badges in PeriodDetail.jsx) rather than the warning or health-danger
+   tokens, which on this exact page/table are already the "needs attention"
+   register for .txn-uncat/.badge.txn-prov-uncat and would visually collide. */
+.badge-moved { background: var(--health-none-bg); color: var(--health-none-ink); margin-left: 0.4rem; }
+.txn-actions { display: inline-flex; gap: 0.25rem; }
 
 .bulk-bar {
   display: flex;
