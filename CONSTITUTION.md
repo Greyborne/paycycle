@@ -532,6 +532,87 @@ agent's leftover file whose provenance isn't self-evident.
   2026-07-26 rule already covers this correctly); logged as a reminder that
   the boss is not exempt from its own dispatch checklist. Boss-approved.
 
+- **2026-08-06 — Category pickers must disambiguate same-named categories
+  that collide via the default-account fallback.** Bug found by the user
+  while testing the period-reassignment build (unrelated feature, found in
+  passing): a household's onboarding-seeded categories are created with no
+  `account_id` (`server/routes/setup.js:69-70`, "floating"), resolved
+  dynamically as `template.account_id ?? defaultAccountId`
+  (`server/services/budget.js:88-90` — deliberate, already-documented
+  behavior, not itself the bug). When a user archives their original
+  account (forcing `is_default` onto a new one, `accounts.js:188-189`), a
+  floating "Groceries" silently re-parents to the new account, landing
+  right alongside a brand-new, explicitly-scoped "Groceries" the user
+  creates for that account — two categories, same name, no visual
+  distinction, in `RuleDrawer.jsx`'s and `Transactions.jsx`'s category
+  `<option>` lists. Picking the wrong one applies the legacy template.
+  User-confirmed decisions:
+  - **Fix the picker, not the data.** Existing floating categories and any
+    rules already pointing at them are left exactly as they are — no
+    migration, no forced re-parenting, no retroactive cleanup. Purely a
+    display-layer fix.
+  - **Mechanism:** `web/src/categoryScope.js` (the existing single source
+    of truth for this scoping rule, already mirrored from the backend
+    predicate per its own file header) gains a `withDisplayNames` helper:
+    within a scoped list, any category whose `name` collides with another
+    entry AND has no explicit `accountId` (i.e. reached this account only
+    via the default-account fallback) gets a `displayName` of `"{name}
+    (default)"`; every other category's `displayName` equals its plain
+    `name`. `categoriesForAccount`/`categoriesForAccounts` annotate their
+    return values with this before handing them back, so every consumer
+    gets it automatically without recomputing collision logic.
+    **Corrected 2026-08-06, mid-build:** first shipped as `" (default
+    category)"`; a11y-checker render-confirmed this clipped mid-word in
+    two of the three consumer `<select>`s (`Transactions.jsx`'s row
+    `CategorySelect`, `max-width: 220px`, and `Rules.jsx`'s `RuleRow`
+    select, ~150px grid column) — full text was still in the accessible
+    name/DOM (screen readers unaffected), but sighted users lost the
+    disambiguation in the two places they'd actually need it. Boss ruling:
+    shorten the copy rather than widen either column — both selects live
+    in tables already fixed once this session for a horizontal-scroll
+    regression (2026-08-04 entry, Task 3), and widening either risks
+    reopening that for a cosmetic string. `" (default)"` reads
+    unambiguously in context (always inside a field already labeled
+    "Category") and is roughly half the length.
+    **Second correction, same day:** `" (default)"` fit `Transactions.jsx`'s
+    row select cleanly but still clipped in `Rules.jsx`'s `RuleRow` select
+    (measured content box ~134px vs. ~127.5px needed plus arrow overlap) —
+    the worker correctly re-tested rather than assuming the shorter string
+    was automatically enough, and escalated instead of guessing. Re-ruling:
+    widen `Rules.jsx`'s fixed 150px category column (`.rule-grid`'s
+    `grid-template-columns`, `web/src/styles.css:942`) to 175px (and its
+    `min-width: 1180px` to `1205px` to match), rather than truncate the
+    copy into an unclear abbreviation. This is materially different from
+    the `Transactions.jsx`/Task-3 case that motivated "shorten, don't
+    widen": `.rule-grid` is a CSS grid already wrapped in its own
+    `.rules-scroll { overflow-x: auto }` container with a fixed `min-width`
+    (`styles.css:939-945`) — it already horizontally scrolls by design for
+    exactly this kind of overflow, unlike `.txn-table`, where the whole
+    point of the earlier fix was to *avoid* horizontal scroll. Widening one
+    fixed grid column here uses the mechanism already built for it, not
+    fighting a table's automatic layout.
+  - **Consumers to update** (render `c.displayName ?? c.name` instead of
+    `c.name`): `RuleDrawer.jsx`'s `CategoryOptions` (where the user hit
+    this), `Transactions.jsx`'s local `CategorySelect` component and its
+    category filter dropdown, and `Rules.jsx`'s `RuleRow` category
+    `<option>` list — the last of these has the identical unguarded
+    collision shape (`categories.filter((c) => (c.accountId ?? defaultId)
+    === rule.owningAccountId)`, `Rules.jsx:119`) even though it doesn't
+    reuse `categoriesForAccount` (a different filter axis — by the rule's
+    owning account, not a selected account — so apply the same
+    `withDisplayNames` annotation to its own already-computed
+    `categoryOptions` array rather than switching it to the shared
+    helper and risking a behavior change to its dead-rule safety net).
+  - **No functional/matching change.** This is copy-only (`displayName`
+    is additive, the underlying `id` submitted by any `<select>` is
+    unchanged) — content-checker verbatim sweep required (the new
+    `" (default category)"` suffix is specified verbatim here, per the
+    existing rule that boss-specified new copy inserted mechanically by a
+    code-worker still gets a verbatim check, not a full content-worker
+    round). a11y-checker required (accessible names change length, not
+    structure — confirm no truncation/collision issues in real screen
+    readers). No backend change, no security-checker needed. Boss-approved.
+
 ## 8. Sign-off & amendment
 This constitution is the standard until the boss explicitly revises it
 here, dated. A checker's FAIL is not overridden by a worker's — or the

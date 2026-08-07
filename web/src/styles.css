@@ -939,10 +939,10 @@ input.category-name:hover, input.category-name:focus { border-color: var(--borde
 .rules-scroll { overflow-x: auto; }
 .rule-grid {
   display: grid;
-  grid-template-columns: 30px 150px 1fr 110px 110px 84px 76px 76px 76px 80px 1fr 56px;
+  grid-template-columns: 30px 175px 1fr 110px 110px 84px 76px 76px 76px 80px 1fr 56px;
   gap: 0.35rem;
   align-items: center;
-  min-width: 1180px;
+  min-width: 1205px;
 }
 .rule-grid input, .rule-grid select { margin-top: 0; width: 100%; padding: 0.35rem 0.5rem; font-size: 0.85rem; }
 .rule-grid-head {

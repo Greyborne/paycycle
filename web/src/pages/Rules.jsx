@@ -3,6 +3,7 @@ import { api } from '../api.js';
 import { useAccount, useAuth } from '../App.jsx';
 import { centsToInput, fmtDate, fmtMoney, parseMoney } from '../format.js';
 import { useAccounts } from '../useAccounts.js';
+import { withDisplayNames } from '../categoryScope.js';
 import RuleCreateDrawer from '../components/RuleCreateDrawer.jsx';
 
 // Spreadsheet-style rule editor: one row per rule, all filled-in fields must
@@ -150,8 +151,8 @@ function RuleRow({ rule, categories, defaultId, currency, onChanged, onMove, isF
           value={state.categoryTemplateId} aria-label="Category"
           onChange={(e) => set('categoryTemplateId', Number(e.target.value))}
         >
-          {categoryOptions.map((c) => (
-            <option key={c.id} value={c.id}>{c.name}{c.categoryType === 'tag' ? ' (tag)' : ''}</option>
+          {withDisplayNames(categoryOptions).map((c) => (
+            <option key={c.id} value={c.id}>{c.displayName ?? c.name}{c.categoryType === 'tag' ? ' (tag)' : ''}</option>
           ))}
         </select>
         {TEXT_FIELDS.map(([k, label]) => (

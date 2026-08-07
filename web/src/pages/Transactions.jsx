@@ -13,7 +13,7 @@ import TransactionCreateDrawer from '../components/TransactionCreateDrawer.jsx';
 function CategorySelect({ value, categories, onChange, disabled, ariaLabel }) {
   const group = (type, categoryType) => categories
     .filter((c) => !c.archived && c.type === type && c.categoryType === categoryType);
-  const renderOptions = (list) => list.map((c) => <option key={c.id} value={c.id}>{c.name}</option>);
+  const renderOptions = (list) => list.map((c) => <option key={c.id} value={c.id}>{c.displayName ?? c.name}</option>);
   const recurring = [...group('expense', 'recurring'), ...group('income', 'recurring')];
   const tags = [...group('expense', 'tag'), ...group('income', 'tag')];
   return (
@@ -302,7 +302,7 @@ export default function Transactions() {
               <option value="">All</option>
               <option value="none">Uncategorized</option>
               {categoriesForAccount(categories, filterAccountId, defaultAccountId).map((c) => (
-                <option key={c.id} value={c.id}>{c.name}{c.categoryType === 'tag' ? ' (tag)' : ''}</option>
+                <option key={c.id} value={c.id}>{c.displayName ?? c.name}{c.categoryType === 'tag' ? ' (tag)' : ''}</option>
               ))}
             </select>
           </label>
